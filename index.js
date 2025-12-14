@@ -5,6 +5,8 @@ const app = express()
 // const crypto = require("crypto");
 const port = process.env.PORT || 3000
 const admin = require("firebase-admin");
+const jwt = require("jsonwebtoken");
+
 
 // const serviceAccount = require("./asset-verse-firebase-admin-sdk.json");
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
@@ -60,7 +62,6 @@ async function run() {
         const packagesCollection = db.collection("packages")
         const usersCollection= db.collection("users")
 
-        const jwt = require("jsonwebtoken");
 
         app.post("/jwt", async (req, res) => {
             const user = req.body; // { email }
