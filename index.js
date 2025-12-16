@@ -149,59 +149,66 @@ async function run() {
         });
 
         app.patch('/assets/:id', verifyToken, verifyHR, async (req, res) => {
-        
-                const id = req.params.id;
+            const id = req.params.id;
+            const { productName, productImage, productType, productQuantity } = req.body;
+            const asset = await assetsCollection.findOne({
+                _id: new ObjectId(id)
+            });
 
-                const { productName, productImage, productType, productQuantity } = req.body;
+            if (!asset) {
+                return res.status(404).send({ message: "Asset not found" });
+            }
 
-                const asset = await assetsCollection.findOne({
-                    _id: new ObjectId(id)
+            if (asset.hrEmail !== req.decoded.email) {
+                return res.status(403).send({
+                    message: "You can only edit assets you created"
                 });
+            }
 
-                if (!asset) {
-                    return res.status(404).send({ message: "Asset not found" });
+            const assignedQuantity =
+                Number(asset.productQuantity) - Number(asset.availableQuantity);
+            const newproductQuantity =
+                productQuantity !== undefined
+                    ? Number(productQuantity)
+                    : asset.productQuantity;
+
+            if (newproductQuantity < assignedQuantity) {
+                return res.status(400).send({
+                    message: "Total quantity cannot be less than assigned assets"
+                });
+            }
+
+            const updateDoc = {
+                $set: {
+                    productName: productName || asset.productName,
+                    productImage: productImage || asset.productImage,
+                    productType: productType || asset.productType,
+                    productQuantity: newproductQuantity,
+                    availableQuantity: newproductQuantity - assignedQuantity,
+                    updatedAt: new Date()
                 }
-
-                if (asset.hrEmail !== req.decoded.email) {
-                    return res.status(403).send({
-                        message: "You can only edit assets you created"
-                    });
-                }
-
-                const assignedQuantity =
-                    Number(asset.productQuantity) - Number(asset.availableQuantity);
-
-                const newproductQuantity =
-                    productQuantity !== undefined
-                        ? Number(productQuantity)
-                        : asset.productQuantity;
-
-                if (newproductQuantity < assignedQuantity) {
-                    return res.status(400).send({
-                        message: "Total quantity cannot be less than assigned assets"
-                    });
-                }
-
-                const updateDoc = {
-                    $set: {
-                        productName: productName || asset.productName,
-                        productImage: productImage || asset.productImage,
-                        productType: productType || asset.productType,
-                        productQuantity: newproductQuantity,
-                        availableQuantity: newproductQuantity - assignedQuantity,
-                        updatedAt: new Date()
-                    }
-                };
-
-                const result = await assetsCollection.updateOne(
-                    { _id: new ObjectId(id) },
-                    updateDoc
-                );
-
-                res.send({result});
-
-           
+            };
+            const result = await assetsCollection.updateOne(
+                { _id: new ObjectId(id) },
+                updateDoc
+            );
+            res.send({ result });
         });
+
+        app.delete('/assets/:id', verifyToken, verifyHR, async (req, res) => {
+            const id = req.params.id;
+            const email = req.decoded.email;
+            const query = {
+                _id: new ObjectId(id),
+                hrEmail: email,
+            };
+
+            if (!email) {
+                return res.status(403).send({ message: "Forbidden access" });
+            }
+            const result = await assetsCollection.deleteOne(query)
+            res.send(result)
+        })
 
 
         await client.db("admin").command({ ping: 1 });
