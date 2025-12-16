@@ -28,14 +28,7 @@ const verifyToken = (req, res, next) => {
         return res.status(401).send({ message: "Unauthorized access" });
     }
 
-    // const token = authHeader.split(" ")[1];
-    const token = jwt.sign(
-        { email: user.email },
-        process.env.ACCESS_TOKEN_SECRET,
-        { expiresIn: "7d" }
-    );
-
-
+    const token = authHeader.split(" ")[1];
     jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
         if (err) {
             return res.status(403).send({ message: "Forbidden access" });
@@ -47,7 +40,7 @@ const verifyToken = (req, res, next) => {
 
 
 
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.9hcy35q.mongodb.net/?appName=Cluster0`;
 
 const client = new MongoClient(uri, {
@@ -115,7 +108,7 @@ async function run() {
         })
 
         // users apis
-        app.post("/users", verifyToken, verifyHR, async (req, res) => {
+        app.post("/users", async (req, res) => {
             const newUser = req.body;
             const existingUser = await usersCollection.findOne({ email: newUser.email });
             if (existingUser) {
@@ -131,11 +124,15 @@ async function run() {
         });
 
         app.get('/users/:email/role', verifyToken, async (req, res) => {
-            const email = req.params.email
-            const query = { email }
-            const user = await usersCollection.findOne(query)
-            res.send({ role: user?.role || 'employee' })
-        })
+            const decodecEmail = req.decoded.email
+            const reqEmail = req.params.email
+            if (decodecEmail !== reqEmail) {
+                return res.status(403).send({ message: 'Forbidden' });
+            }
+
+            const user = await usersCollection.findOne({ email: req.params.email });
+            res.send({ role: user?.role || 'employee' });
+        });
 
         // assets apis
         app.post('/assets', verifyToken, verifyHR, async (req, res) => {
@@ -144,6 +141,67 @@ async function run() {
             const result = await assetsCollection.insertOne(asset)
             res.send(result)
         })
+
+        app.get("/assets", verifyToken, verifyHR, async (req, res) => {
+            const email = req.decoded.email;
+            const result = await assetsCollection.find({ hrEmail: email }).toArray();
+            res.send(result);
+        });
+
+        app.patch('/assets/:id', verifyToken, verifyHR, async (req, res) => {
+        
+                const id = req.params.id;
+
+                const { productName, productImage, productType, productQuantity } = req.body;
+
+                const asset = await assetsCollection.findOne({
+                    _id: new ObjectId(id)
+                });
+
+                if (!asset) {
+                    return res.status(404).send({ message: "Asset not found" });
+                }
+
+                if (asset.hrEmail !== req.decoded.email) {
+                    return res.status(403).send({
+                        message: "You can only edit assets you created"
+                    });
+                }
+
+                const assignedQuantity =
+                    Number(asset.productQuantity) - Number(asset.availableQuantity);
+
+                const newproductQuantity =
+                    productQuantity !== undefined
+                        ? Number(productQuantity)
+                        : asset.productQuantity;
+
+                if (newproductQuantity < assignedQuantity) {
+                    return res.status(400).send({
+                        message: "Total quantity cannot be less than assigned assets"
+                    });
+                }
+
+                const updateDoc = {
+                    $set: {
+                        productName: productName || asset.productName,
+                        productImage: productImage || asset.productImage,
+                        productType: productType || asset.productType,
+                        productQuantity: newproductQuantity,
+                        availableQuantity: newproductQuantity - assignedQuantity,
+                        updatedAt: new Date()
+                    }
+                };
+
+                const result = await assetsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    updateDoc
+                );
+
+                res.send({result});
+
+           
+        });
 
 
         await client.db("admin").command({ ping: 1 });
