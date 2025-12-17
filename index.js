@@ -153,7 +153,22 @@ async function run() {
 
         app.get("/assets", verifyToken, verifyHR, async (req, res) => {
             const email = req.decoded.email;
-            const result = await assetsCollection.find({ hrEmail: email }).sort({ createdAt: -1 }).toArray();
+            const searchText = req.query.searchText
+            const query = {}
+
+            if (email) {
+                query.hrEmail = email;
+                if (email !== req.decoded.email) {
+                    return res.status(403).send({ message: 'Forbidden access' })
+                }
+            }
+
+            if (searchText) {
+                query.productName = { $regex: searchText, $options: 'i' }
+            }
+
+            const cursor = assetsCollection.find(query).sort({ createdAt: -1 })
+            const result = await cursor.toArray();
             res.send(result);
         });
 
