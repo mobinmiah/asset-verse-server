@@ -55,7 +55,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
     try {
-        await client.connect();
+        // await client.connect();
 
         const db = client.db("assetVerseDB")
         const packagesCollection = db.collection("packages")
@@ -118,6 +118,15 @@ async function run() {
             res.send(result);
         });
 
+        app.get('/users/:email', verifyToken, async (req, res) => {
+            const email = req.params.email
+            if (email !== req.decoded.email) {
+                return res.status(403).send({ message: 'Forbidden access' })
+            }
+            const result = await usersCollection.findOne({ email })
+            res.send(result)
+        })
+
         app.get("/users", verifyToken, verifyHR, async (req, res) => {
             const result = await usersCollection.find().toArray();
             res.send(result);
@@ -144,7 +153,7 @@ async function run() {
 
         app.get("/assets", verifyToken, verifyHR, async (req, res) => {
             const email = req.decoded.email;
-            const result = await assetsCollection.find({ hrEmail: email }).toArray();
+            const result = await assetsCollection.find({ hrEmail: email }).sort({ createdAt: -1 }).toArray();
             res.send(result);
         });
 
@@ -185,7 +194,6 @@ async function run() {
                     productType: productType || asset.productType,
                     productQuantity: newproductQuantity,
                     availableQuantity: newproductQuantity - assignedQuantity,
-                    updatedAt: new Date()
                 }
             };
             const result = await assetsCollection.updateOne(
@@ -211,8 +219,8 @@ async function run() {
         })
 
 
-        await client.db("admin").command({ ping: 1 });
-        console.log("Pinged your deployment. You successfully connected to MongoDB!");
+        // await client.db("admin").command({ ping: 1 });
+        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
 
     }
