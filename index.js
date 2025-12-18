@@ -151,15 +151,26 @@ async function run() {
             res.send({ role: user?.role || 'employee' })
         })
 
-        app.get('/users/:email/role', verifyToken, async (req, res) => {
-            const email = req.params.email
+        app.patch("/users/:email", verifyToken, async (req, res) => {
+            const email = req.params.email;
             const decodedEmail = req.decoded.email
+
             if (email !== decodedEmail) {
-                return res.status(403).send({ message: 'Forbidden' });
+                return res.status(403).send({ message: "Forbidden access" });
             }
 
-            const user = await usersCollection.findOne({ email: req.params.email });
-            res.send({ role: user?.role || 'employee' });
+            const updatedData = req.body;
+
+            // prevent role/email manipulation
+            delete updatedData.role;
+            delete updatedData.email;
+
+            const result = await usersCollection.updateOne(
+                { email },
+                { $set: updatedData }
+            );
+
+            res.send(result);
         });
 
 
@@ -192,7 +203,7 @@ async function run() {
             res.send(result);
         });
 
-        app.get("/assets/public", async (req, res) => {
+        app.get("/assets/public", verifyToken, async (req, res) => {
             const searchText = req.query.searchText || "";
             const limit = parseInt(req.query.limit);
             const skip = parseInt(req.query.skip);
@@ -204,6 +215,7 @@ async function run() {
             const assets = await assetsCollection
                 .find(query)
                 .skip(skip)
+                .sort({ createdAt: -1 })
                 .limit(limit)
                 .toArray();
 
