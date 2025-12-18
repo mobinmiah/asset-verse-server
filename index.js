@@ -192,18 +192,28 @@ async function run() {
             res.send(result);
         });
 
-        app.get("/assets/public", verifyToken, async (req, res) => {
-            const searchText = req.query.searchText
-            const query = {}
+        app.get("/assets/public", async (req, res) => {
+            const searchText = req.query.searchText || "";
+            const limit = parseInt(req.query.limit);
+            const skip = parseInt(req.query.skip);
 
-            if (searchText) {
-                query.productName = { $regex: searchText, $options: 'i' }
-            }
-            const cursor = assetsCollection.find(query).sort({ createdAt: -1 })
-            const result = await cursor.toArray();
-            res.send(result);
+            const query = searchText
+                ? { productName: { $regex: searchText, $options: "i" } }
+                : {};
+
+            const assets = await assetsCollection
+                .find(query)
+                .skip(skip)
+                .limit(limit)
+                .toArray();
+
+            const total = await assetsCollection.countDocuments(query);
+
+            res.send({
+                assets,
+                total,
+            });
         });
-
 
         app.patch('/assets/:id', verifyToken, verifyHR, async (req, res) => {
             const id = req.params.id;
