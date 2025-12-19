@@ -213,7 +213,7 @@ async function run() {
                 : {};
 
             const assets = await assetsCollection
-                .find(query)
+                .find(query)    
                 .skip(skip)
                 .sort({ createdAt: -1 })
                 .limit(limit)
@@ -228,6 +228,34 @@ async function run() {
         });
 
         app.patch('/assets/:id', verifyToken, verifyHR, async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) }
+            const { productName, productImage, productType, productQuantity } = req.body;
+            const asset = await assetsCollection.findOne(query);
+
+            if (!asset) {
+                return res.status(404).send({ message: "Asset not found" });
+            }
+
+            if (asset.hrEmail !== req.decoded.email) {
+                return res.status(403).send({
+                    message: "Forbidden access"
+                });
+            }
+
+            const updateDoc = {
+                $set: {
+                    productName: productName || asset.productName,
+                    productImage: productImage || asset.productImage,
+                    productType: productType || asset.productType,
+                    productQuantity: productQuantity || asset.productQuantity,
+                }
+            };
+            const result = await assetsCollection.updateOne(query, updateDoc);
+            res.send(result);
+        });
+       
+        app.patch('/assets/:id/employee', verifyToken, verifyHR, async (req, res) => {
             const id = req.params.id;
             const query = { _id: new ObjectId(id) }
             const { productName, productImage, productType, productQuantity } = req.body;
@@ -271,46 +299,35 @@ async function run() {
         })
 
         // request apis
-        app.post('/asset-requests', verifyToken, async (req, res) => {
-            const {
-                assetId,
-                requestedQuantity,
-                requestNote
-            } = req.body;
-
-            const asset = await assetsCollection.findOne({ _id: new ObjectId(assetId) });
+        app.post("/asset-requests", verifyToken, verifyEmployee,async (req, res) => {
+            const { assetId } = req.body;
+            const employeeEmail = req.decoded.email;
+            const asset = await assetsCollection.findOne({
+                _id: new ObjectId(assetId),
+            });
 
             if (!asset) {
-                return res.status(404).send({ message: "Asset not found" });
+                return res.send({ message: "Asset not found" });
             }
-
-            if (requestedQuantity > asset.availableQuantity) {
-                return res.status(400).send({ message: "Not enough stock available" });
-            }
-
-            const newRequest = {
+            const request = {
                 assetId: asset._id,
                 productName: asset.productName,
-                productImage: asset.productImage,
-                productType: asset.productType,
 
-                requesterEmail: req.decoded.email,
-                requesterName: req.decoded.name,
-
-                requestedQuantity,
-                requestNote: requestNote || "",
-
-                companyName: asset.companyName,
+                employeeEmail,
                 hrEmail: asset.hrEmail,
+                companyName: asset.companyName,
 
                 status: "pending",
-                requestedAt: new Date(),
-
+                requestDate: new Date(),
             };
 
-            const result = await requestCollection.insertOne(newRequest);
-            res.send(result);
+            await requestCollection.insertOne(request);
+
+            res.send({ success: true, message: "Request sent" });
         });
+
+        
+
 
 
 
