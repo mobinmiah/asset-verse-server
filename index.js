@@ -149,16 +149,12 @@ async function run() {
             }
 
             const updatedData = req.body;
-
-            // prevent role/email manipulation
             delete updatedData.role;
             delete updatedData.email;
-
             const result = await usersCollection.updateOne(
                 { email },
                 { $set: updatedData }
             );
-
             res.send(result);
         });
 
@@ -172,24 +168,30 @@ async function run() {
         })
 
         app.get("/assets", verifyToken, verifyHR, async (req, res) => {
-            const email = req.decoded.email;
-            const searchText = req.query.searchText
-            const query = {}
+            try {
+                const searchText = req.query.searchText || "";
+                const email = req.decoded.email;
 
-            if (email) {
-                query.hrEmail = email;
-                if (email !== req.decoded.email) {
-                    return res.status(403).send({ message: 'Forbidden access' })
+                const query = {
+                    hrEmail: email,
+                };
+
+                if (searchText) {
+                    query.$or = [
+                        { productName: { $regex: searchText, $options: "i" } },
+                        { productType: { $regex: searchText, $options: "i" } },
+                    ];
                 }
-            }
 
-            if (searchText) {
-                query.productName = { $regex: searchText, $options: 'i' }
-            }
+                const result = await assetsCollection
+                    .find(query)
+                    .sort({ createdAt: -1 })
+                    .toArray();
 
-            const cursor = assetsCollection.find(query).sort({ createdAt: -1 })
-            const result = await cursor.toArray();
-            res.send(result);
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ message: "Failed to fetch assets" });
+            }
         });
 
         app.get("/assets/public", verifyToken, async (req, res) => {
