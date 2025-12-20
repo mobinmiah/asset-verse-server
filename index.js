@@ -95,17 +95,6 @@ async function run() {
             });
             res.send({ token });
         });
-        // app.post("/jwt", async (req, res) => {
-        //     const { email, name, role } = req.body;
-
-        //     const token = jwt.sign(
-        //         { email, name, role },
-        //         process.env.ACCESS_TOKEN_SECRET,
-        //         { expiresIn: "7d" }
-        //     );
-
-        //     res.send({ token });
-        // });
 
         // global api
         app.get('/', (req, res) => {
@@ -213,7 +202,7 @@ async function run() {
                 : {};
 
             const assets = await assetsCollection
-                .find(query)    
+                .find(query)
                 .skip(skip)
                 .sort({ createdAt: -1 })
                 .limit(limit)
@@ -254,7 +243,7 @@ async function run() {
             const result = await assetsCollection.updateOne(query, updateDoc);
             res.send(result);
         });
-       
+
         app.patch('/assets/:id/employee', verifyToken, verifyHR, async (req, res) => {
             const id = req.params.id;
             const query = { _id: new ObjectId(id) }
@@ -299,21 +288,28 @@ async function run() {
         })
 
         // request apis
-        app.post("/asset-requests", verifyToken, verifyEmployee,async (req, res) => {
+        app.post("/asset-requests", verifyToken, verifyEmployee, async (req, res) => {
             const { assetId } = req.body;
             const employeeEmail = req.decoded.email;
             const asset = await assetsCollection.findOne({
                 _id: new ObjectId(assetId),
             });
-
             if (!asset) {
-                return res.send({ message: "Asset not found" });
+                return res.status(404).send({ message: "Asset not found" });
             }
+            if (asset.productQuantity === 0) {
+                return res.status(400).send({
+                    message: "Asset is currently unavailable",
+                });
+            }
+            const employee = await usersCollection.findOne({
+                email: employeeEmail,
+            });
             const request = {
                 assetId: asset._id,
                 productName: asset.productName,
-
                 employeeEmail,
+                employeeName: employee?.name || "Unknown",
                 hrEmail: asset.hrEmail,
                 companyName: asset.companyName,
 
@@ -321,12 +317,111 @@ async function run() {
                 requestDate: new Date(),
             };
 
+            const existingRequest = await requestCollection.findOne({
+                assetId: asset._id,
+                employeeEmail,
+                status: "pending",
+            });
+
+            if (existingRequest) {
+                return res.status(400).send({
+                    message: "You already requested this asset",
+                });
+            }
+
+
             await requestCollection.insertOne(request);
 
-            res.send({ success: true, message: "Request sent" });
+            res.send({ success: true });
         });
 
-        
+
+        app.get("/asset-requests/hr", verifyToken, verifyHR, async (req, res) => {
+            const hrEmail = req.decoded.email;
+
+            const requests = await requestCollection
+                .find({ hrEmail })
+                .sort({ requestDate: -1 })
+
+                .toArray();
+
+            res.send(requests);
+        });
+
+        app.patch("/requests/:id/status", verifyToken, verifyHR, async (req, res) => {
+            const { status } = req.body;
+            const id = req.params.id;
+            const requestQuery = { _id: new ObjectId(id) };
+            const request = await requestCollection.findOne(requestQuery);
+
+            if (request.status !== "pending") {
+                return res.status(400).send({ message: "Already processed" });
+            }
+
+            if (status === "rejected") {
+                const updatedRejection = {
+                    $set: {
+                        status: "rejected",
+                        actionDate: new Date(),
+                    },
+                }
+                await requestCollection.updateOne(requestQuery, updatedRejection);
+                return res.send({ success: true });
+            }
+
+            const assetQuery = { _id: request.assetId };
+            const asset = await assetsCollection.findOne(assetQuery);
+
+            if (asset.productQuantity <= 0) {
+                return res.status(400).send({ message: "Asset is Empty" });
+            }
+
+            const deductQuantity = {
+                $inc: { productQuantity: -1 },
+            }
+            await assetsCollection.updateOne(assetQuery, deductQuantity);
+
+            const employeeEmail = { email: request.employeeEmail }
+            const pushAsset = {
+                $push: {
+                    assets: {
+                        assetId: asset._id,
+                        productName: asset.productName,
+                        assignedDate: new Date(),
+                    },
+                },
+            }
+            await usersCollection.updateOne(employeeEmail, pushAsset);
+
+            const hrEmailQuery = {
+                email: request.employeeEmail,
+                "affiliations.hrEmail": { $ne: request.hrEmail },
+            }
+            const pushAffiliation = {
+                $push: {
+                    affiliations: {
+                        hrEmail: request.hrEmail,
+                        companyName: request.companyName,
+                        joinedAt: new Date(),
+                    },
+                },
+            }
+            await usersCollection.updateOne(hrEmailQuery, pushAffiliation);
+
+            const updateRequestStatus = {
+                $set: {
+                    status: "approved",
+                    actionDate: new Date(),
+                },
+            }
+            await requestCollection.updateOne(requestQuery, updateRequestStatus);
+            res.send({ success: true });
+        }
+        );
+
+
+
+
 
 
 
