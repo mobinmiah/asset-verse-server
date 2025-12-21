@@ -96,21 +96,79 @@ async function run() {
             res.send({ token });
         });
 
-// payment api
-app.post('checkout-session', async(req,res)=>{
-    const paymentInfo= req.body
-    const session = await stripe.checkout.sessions.create({
-        line_items: [
-            {
-                // Provide the exact Price ID (for example, price_1234) of the product you want to sell
-                price: '{{PRICE_ID}}',
-                quantity: 1,
-            },
-        ],
-        mode: 'payment',
-        success_url: `${process.env.SITE_DOMAIN}?success=true`,
-    })
-})
+        // payment apis
+        app.post("/checkout-session", verifyToken, verifyHR, async (req, res) => {
+            try {
+                const email = req.decoded.email
+                const packageInfo = req.body;
+                const amount = parseInt(packageInfo.price) * 100;
+                const session = await stripe.checkout.sessions.create({
+                    line_items: [
+                        {
+                            price_data: {
+                                currency: "USD",
+                                unit_amount: amount,
+                                product_data: {
+                                    name: packageInfo.name,
+                                },
+                            },
+                            quantity: 1,
+                        },
+                    ],
+                    customer_email: req.decoded.email,
+                    mode: "payment",
+                    metadata: {
+                        email: email,
+                        packageName: packageInfo.name,
+                        employeeLimit: packageInfo.employeeLimit,
+                    },
+                    success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+                    cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+                });
+
+                res.send({ url: session.url });
+
+            } catch (error) {
+
+                res.status(500).send({ message: "Failed to create checkout session" });
+            }
+        });
+
+
+        app.patch("/payment-success", verifyToken, verifyHR, async (req, res) => {
+            try {
+                const sessionId = req.body.sessionId;
+                const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+                if (session.payment_status !== "paid") {
+                    return res.status(400).send({ success: false, message: "Payment not completed" });
+                }
+
+                const email = session.metadata.email;
+                const planName = session.metadata.packageName;
+                const employeeLimit = Number(session.metadata.employeeLimit);
+
+                await usersCollection.updateOne(
+                    { email },
+                    {
+                        $set: {
+                            subscription: planName,
+                            packageLimit: employeeLimit,
+                            paid: true,
+                            upgradedAt: new Date(),
+                        },
+                    }
+                );
+
+                res.send({ success: true, message: `Plan upgraded to ${planName}` });
+
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Something went wrong" });
+            }
+        });
+
+
 
         // global api
         app.get('/', (req, res) => {
