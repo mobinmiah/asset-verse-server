@@ -6,7 +6,7 @@ const app = express()
 const port = process.env.PORT || 3000
 const admin = require("firebase-admin");
 const jwt = require("jsonwebtoken");
-
+const stripe = require('stripe')(process.env.STRIPE_KEY);
 
 // const serviceAccount = require("./asset-verse-firebase-admin-sdk.json");
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
@@ -96,6 +96,22 @@ async function run() {
             res.send({ token });
         });
 
+// payment api
+app.post('checkout-session', async(req,res)=>{
+    const paymentInfo= req.body
+    const session = await stripe.checkout.sessions.create({
+        line_items: [
+            {
+                // Provide the exact Price ID (for example, price_1234) of the product you want to sell
+                price: '{{PRICE_ID}}',
+                quantity: 1,
+            },
+        ],
+        mode: 'payment',
+        success_url: `${process.env.SITE_DOMAIN}?success=true`,
+    })
+})
+
         // global api
         app.get('/', (req, res) => {
             res.send('Asset Verse Server is Running')
@@ -103,6 +119,12 @@ async function run() {
 
         // packages api
         app.get('/packages', async (req, res) => {
+            const cursor = packagesCollection.find()
+            const result = await cursor.toArray()
+            res.send(result)
+        })
+
+        app.get('/packages/hr', verifyToken, verifyHR, async (req, res) => {
             const cursor = packagesCollection.find()
             const result = await cursor.toArray()
             res.send(result)
