@@ -170,7 +170,7 @@ async function run() {
 
 
 
-        // global api
+        // global apis
         app.get('/', (req, res) => {
             res.send('Asset Verse Server is Running')
         })
@@ -219,6 +219,32 @@ async function run() {
             const user = await usersCollection.findOne(query)
             res.send({ role: user?.role || 'employee' })
         })
+
+        app.get('/users/employee', verifyToken, verifyHR, async (req, res) => {
+            try {
+                const hrEmail = req.decoded.email;
+                const hrUser = await usersCollection.findOne({ email: hrEmail });
+      
+                const employees = await usersCollection
+                    .find({ companyName: hrUser.companyName, role: 'employee' })
+                    .toArray();
+
+                const employeesWithAssets = await Promise.all(
+                    employees.map(async (emp) => {
+                        const assetCount = await assetsCollection.countDocuments({
+                            hrEmail,
+                            employeeEmail: emp.email
+                        });
+                        return { ...emp, assetCount };
+                    })
+                );
+
+                res.send(employeesWithAssets);
+            } catch (err) {
+                res.status(500).send({ message: 'Server Error' });
+            }
+        });
+
 
         app.patch("/users/:email", verifyToken, async (req, res) => {
             const email = req.params.email;
@@ -297,6 +323,27 @@ async function run() {
                 total,
             });
         });
+
+        app.get("/analytics/asset-types", verifyToken, verifyHR, async (req, res) => {
+            const result = await assetsCollection.aggregate([
+                {
+                    $group: {
+                        _id: "$productType",
+                        count: { $sum: 1 },
+                    },
+                },
+                {
+                    $project: {
+                        _id: 0,
+                        name: "$_id",
+                        value: "$count",
+                    },
+                },
+            ]).toArray();
+
+            res.send(result);
+        });
+
 
         app.patch('/assets/:id', verifyToken, verifyHR, async (req, res) => {
             const id = req.params.id;
@@ -490,14 +537,22 @@ async function run() {
             }
             await usersCollection.updateOne(hrEmailQuery, pushAffiliation);
 
+            const hrEmail = req.decoded.email;
+            await usersCollection.updateOne(
+                { email: hrEmail },
+                { $inc: { currentEmployees: 1 } }
+            );
+
             const updateRequestStatus = {
                 $set: {
                     status: "approved",
                     actionDate: new Date(),
                 },
-            }
+            };
             await requestCollection.updateOne(requestQuery, updateRequestStatus);
+
             res.send({ success: true });
+
         }
         );
 
