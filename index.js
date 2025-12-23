@@ -224,26 +224,28 @@ async function run() {
         app.get('/users/employee', verifyToken, verifyHR, async (req, res) => {
             try {
                 const hrEmail = req.decoded.email;
+
                 const employees = await usersCollection.find({
                     role: "employee",
                     "affiliations.hrEmail": hrEmail
                 }).toArray();
-                
+
                 const result = employees.map(emp => ({
                     _id: emp._id,
                     name: emp.name,
                     email: emp.email,
-                    photoURL: emp.photo || emp.photoURL,
+                    photoURL: emp.photoURL || emp.photo,
                     createdAt: emp.createdAt,
                     assetCount: emp.assets?.length || 0
                 }));
 
                 res.send(result);
-            } catch (error) {
-                console.error(error);
+            } catch (err) {
+                console.error(err);
                 res.status(500).send({ message: "Server Error" });
             }
         });
+ 
 
 
         app.patch("/users/:email", verifyToken, async (req, res) => {
