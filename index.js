@@ -210,6 +210,7 @@ async function run() {
 
         app.get("/users", verifyToken, verifyHR, async (req, res) => {
             const result = await usersCollection.find().toArray();
+            console.log(result)
             res.send(result);
         });
 
@@ -223,25 +224,24 @@ async function run() {
         app.get('/users/employee', verifyToken, verifyHR, async (req, res) => {
             try {
                 const hrEmail = req.decoded.email;
-                const hrUser = await usersCollection.findOne({ email: hrEmail });
-      
-                const employees = await usersCollection
-                    .find({ companyName: hrUser.companyName, role: 'employee' })
-                    .toArray();
+                const employees = await usersCollection.find({
+                    role: "employee",
+                    "affiliations.hrEmail": hrEmail
+                }).toArray();
+                
+                const result = employees.map(emp => ({
+                    _id: emp._id,
+                    name: emp.name,
+                    email: emp.email,
+                    photoURL: emp.photo || emp.photoURL,
+                    createdAt: emp.createdAt,
+                    assetCount: emp.assets?.length || 0
+                }));
 
-                const employeesWithAssets = await Promise.all(
-                    employees.map(async (emp) => {
-                        const assetCount = await assetsCollection.countDocuments({
-                            hrEmail,
-                            employeeEmail: emp.email
-                        });
-                        return { ...emp, assetCount };
-                    })
-                );
-
-                res.send(employeesWithAssets);
-            } catch (err) {
-                res.status(500).send({ message: 'Server Error' });
+                res.send(result);
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: "Server Error" });
             }
         });
 
@@ -324,26 +324,78 @@ async function run() {
             });
         });
 
-        app.get("/analytics/asset-types", verifyToken, verifyHR, async (req, res) => {
-            const result = await assetsCollection.aggregate([
-                {
-                    $group: {
-                        _id: "$productType",
-                        count: { $sum: 1 },
-                    },
-                },
-                {
-                    $project: {
-                        _id: 0,
-                        name: "$_id",
-                        value: "$count",
-                    },
-                },
-            ]).toArray();
+        // app.get("/analytics/asset-types", verifyToken, verifyHR, async (req, res) => {
+        //     const result = await assetsCollection.aggregate([
+        //         {
+        //             $group: {
+        //                 _id: "$productType",
+        //                 count: { $sum: 1 },
+        //             },
+        //         },
+        //         {
+        //             $project: {
+        //                 _id: 0,
+        //                 name: "$_id",
+        //                 value: "$count",
+        //             },
+        //         },
+        //     ]).toArray();
 
-            res.send(result);
+        //     res.send(result);
+        // });
+
+        app.get("/analytics/asset-types", verifyToken, verifyHR, async (req, res) => {
+            const hrEmail = req.decoded.email;
+
+            const assets = await assetsCollection
+                .find({ hrEmail })
+                .project({ productType: 1 })
+                .toArray();
+
+            let returnable = 0;
+            let nonReturnable = 0;
+
+            assets.forEach(asset => {
+                if (asset.productType === "Returnable") {
+                    returnable++;
+                } else if (asset.productType === "Non-returnable") {
+                    nonReturnable++;
+                }
+            });
+
+            res.send([
+                { name: "Returnable", value: returnable },
+                { name: "Non-returnable", value: nonReturnable },
+            ]);
         });
 
+        app.get(
+            "/analytics/top-requested-assets",
+            verifyToken,
+            verifyHR,
+            async (req, res) => {
+                const hrEmail = req.decoded.email;
+
+                const requests = await requestCollection
+                    .find({ hrEmail })
+                    .project({ productName: 1 })
+                    .toArray();
+
+                const requestCountMap = {};
+
+                requests.forEach(reqItem => {
+                    const name = reqItem.productName;
+                    requestCountMap[name] = (requestCountMap[name] || 0) + 1;
+                });
+
+                const result = Object.entries(requestCountMap)
+                    .map(([name, requests]) => ({ name, requests }))
+                    .sort((a, b) => b.requests - a.requests)
+                    .slice(0, 5);
+
+                res.send(result);
+            }
+        );
 
         app.patch('/assets/:id', verifyToken, verifyHR, async (req, res) => {
             const id = req.params.id;
