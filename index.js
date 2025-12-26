@@ -55,13 +55,25 @@ const client = new MongoClient(uri, {
 
 async function run() {
     try {
-        await client.connect();
+        // await client.connect();
 
         const db = client.db("assetVerseDB")
         const packagesCollection = db.collection("packages")
         const usersCollection = db.collection("users")
         const assetsCollection = db.collection("assets")
         const requestCollection = db.collection('requests')
+
+        async function syncCurrentEmployees(hrEmail) {
+            const count = await usersCollection.countDocuments({
+                role: "employee",
+                "affiliations.hrEmail": hrEmail
+            });
+
+            await usersCollection.updateOne(
+                { email: hrEmail },
+                { $set: { currentEmployees: count } }
+            );
+        }
 
         // verify hr middleware with database access
         const verifyHR = async (req, res, next) => {
@@ -95,6 +107,25 @@ async function run() {
             });
             res.send({ token });
         });
+
+
+        // global apis
+        app.get('/', (req, res) => {
+            res.send('Asset Verse Server is Running')
+        })
+
+        // packages api
+        app.get('/packages', async (req, res) => {
+            const cursor = packagesCollection.find()
+            const result = await cursor.toArray()
+            res.send(result)
+        })
+
+        app.get('/packages/hr', verifyToken, verifyHR, async (req, res) => {
+            const cursor = packagesCollection.find()
+            const result = await cursor.toArray()
+            res.send(result)
+        })
 
         // payment apis
         app.post("/checkout-session", verifyToken, verifyHR, async (req, res) => {
@@ -167,26 +198,6 @@ async function run() {
                 res.status(500).send({ success: false, message: "Something went wrong" });
             }
         });
-
-
-
-        // global apis
-        app.get('/', (req, res) => {
-            res.send('Asset Verse Server is Running')
-        })
-
-        // packages api
-        app.get('/packages', async (req, res) => {
-            const cursor = packagesCollection.find()
-            const result = await cursor.toArray()
-            res.send(result)
-        })
-
-        app.get('/packages/hr', verifyToken, verifyHR, async (req, res) => {
-            const cursor = packagesCollection.find()
-            const result = await cursor.toArray()
-            res.send(result)
-        })
 
         // users apis
         app.post("/users", async (req, res) => {
@@ -361,16 +372,6 @@ async function run() {
                 total,
             });
         });
-
-        // app.get('/my-assets', verifyToken, async (req, res) => {
-        //     const email = req.decoded.email;
-
-        //     const assets = await assignmentsCollection.find({
-        //         employeeEmail: email
-        //     }).toArray();
-
-        //     res.send(assets);
-        // });
 
         app.get("/analytics/asset-types", verifyToken, verifyHR, async (req, res) => {
             const hrEmail = req.decoded.email;
@@ -694,8 +695,8 @@ async function run() {
 
 
 
-        await client.db("admin").command({ ping: 1 });
-        console.log("Pinged your deployment. You successfully connected to MongoDB!");
+        // await client.db("admin").command({ ping: 1 });
+        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
 
     }
