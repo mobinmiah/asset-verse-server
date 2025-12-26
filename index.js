@@ -313,6 +313,55 @@ async function run() {
             res.send(result);
         });
 
+        // my teams apis
+        app.get("/companies/my", verifyToken, verifyEmployee, async (req, res) => {
+            try {
+                const email = req.decoded.email;
+
+                const user = await usersCollection.findOne({ email });
+
+                const companies = (user.affiliations || []).map(company => ({
+                    hrEmail: company.hrEmail,
+                    companyName: company.companyName
+                }));
+
+                res.send(companies);
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
+
+        app.get("/employees/company/:hrEmail", verifyToken, verifyEmployee, async (req, res) => {
+            try {
+                const employeeEmail = req.decoded.email;
+                const { hrEmail } = req.params;
+                const employee = await usersCollection.findOne({
+                    email: employeeEmail,
+                    "affiliations.hrEmail": hrEmail
+                });
+
+                if (!employee) {
+                    return res.status(403).send({ message: "Forbidden access" });
+                }
+
+                const team = await usersCollection.find({
+                    role: "employee",
+                    "affiliations.hrEmail": hrEmail
+                }).project({
+                    name: 1,
+                    email: 1,
+                    photo: 1,
+                    position: 1,
+                    dateOfBirth: 1
+                }).toArray();
+
+                res.send(team);
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
 
         // assets apis
         app.post('/assets', verifyToken, verifyHR, async (req, res) => {
@@ -684,6 +733,7 @@ async function run() {
                 res.status(500).send({ message: "Server error" });
             }
         });
+
 
 
 
