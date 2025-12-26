@@ -55,7 +55,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
     try {
-        // await client.connect();
+        await client.connect();
 
         const db = client.db("assetVerseDB")
         const packagesCollection = db.collection("packages")
@@ -199,27 +199,11 @@ async function run() {
             res.send(result);
         });
 
-        app.get('/users/:email', verifyToken, async (req, res) => {
-            const email = req.params.email
-            if (email !== req.decoded.email) {
-                return res.status(403).send({ message: 'Forbidden access' })
-            }
-            const result = await usersCollection.findOne({ email })
-            res.send(result)
-        })
-
         app.get("/users", verifyToken, verifyHR, async (req, res) => {
             const result = await usersCollection.find().toArray();
             console.log(result)
             res.send(result);
         });
-
-        app.get('/users/:email/role', verifyToken, async (req, res) => {
-            const email = req.params.email
-            const query = { email }
-            const user = await usersCollection.findOne(query)
-            res.send({ role: user?.role || 'employee' })
-        })
 
         app.get('/users/employee', verifyToken, verifyHR, async (req, res) => {
             try {
@@ -245,8 +229,60 @@ async function run() {
                 res.status(500).send({ message: "Server Error" });
             }
         });
- 
 
+        app.delete('/users/employees/:id', verifyToken, verifyHR, async (req, res) => {
+            try {
+                const hrEmail = req.decoded.email;
+                const employeeId = new ObjectId(req.params.id);
+                const employee = await usersCollection.findOne({ _id: employeeId, role: "employee" });
+                const assets = employee.assets || [];
+
+                for (const item of assets) {
+                    await assetsCollection.updateOne(
+                        { _id: item.assetId },
+                        { $inc: { productQuantity: 1 } }
+                    );
+                }
+
+                await usersCollection.updateOne(
+                    { _id: employeeId },
+                    { $set: { assets: [] } }
+                );
+
+                await usersCollection.updateOne(
+                    { _id: employeeId },
+                    { $pull: { affiliations: { hrEmail } } }
+                );
+
+                await usersCollection.updateOne(
+                    { email: hrEmail },
+                    { $inc: { currentEmployees: -1 } }
+                );
+
+                res.send({ success: true });
+
+            } catch (error) {
+                console.error("Remove employee error:", error);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
+
+
+        app.get('/users/:email', verifyToken, async (req, res) => {
+            const email = req.params.email
+            if (email !== req.decoded.email) {
+                return res.status(403).send({ message: 'Forbidden access' })
+            }
+            const result = await usersCollection.findOne({ email })
+            res.send(result)
+        })
+
+        app.get('/users/:email/role', verifyToken, async (req, res) => {
+            const email = req.params.email
+            const query = { email }
+            const user = await usersCollection.findOne(query)
+            res.send({ role: user?.role || 'employee' })
+        })
 
         app.patch("/users/:email", verifyToken, async (req, res) => {
             const email = req.params.email;
@@ -326,34 +362,19 @@ async function run() {
             });
         });
 
-        // app.get("/analytics/asset-types", verifyToken, verifyHR, async (req, res) => {
-        //     const result = await assetsCollection.aggregate([
-        //         {
-        //             $group: {
-        //                 _id: "$productType",
-        //                 count: { $sum: 1 },
-        //             },
-        //         },
-        //         {
-        //             $project: {
-        //                 _id: 0,
-        //                 name: "$_id",
-        //                 value: "$count",
-        //             },
-        //         },
-        //     ]).toArray();
+        // app.get('/my-assets', verifyToken, async (req, res) => {
+        //     const email = req.decoded.email;
 
-        //     res.send(result);
+        //     const assets = await assignmentsCollection.find({
+        //         employeeEmail: email
+        //     }).toArray();
+
+        //     res.send(assets);
         // });
 
         app.get("/analytics/asset-types", verifyToken, verifyHR, async (req, res) => {
             const hrEmail = req.decoded.email;
-
-            const assets = await assetsCollection
-                .find({ hrEmail })
-                .project({ productType: 1 })
-                .toArray();
-
+            const assets = await assetsCollection.find({ hrEmail }).project({ productType: 1 }).toArray();
             let returnable = 0;
             let nonReturnable = 0;
 
@@ -371,32 +392,23 @@ async function run() {
             ]);
         });
 
-        app.get(
-            "/analytics/top-requested-assets",
-            verifyToken,
-            verifyHR,
-            async (req, res) => {
-                const hrEmail = req.decoded.email;
+        app.get("/analytics/top-requested-assets", verifyToken, verifyHR, async (req, res) => {
+            const hrEmail = req.decoded.email;
+            const requests = await requestCollection.find({ hrEmail }).project({ productName: 1 }).toArray();
+            const requestCountMap = {};
 
-                const requests = await requestCollection
-                    .find({ hrEmail })
-                    .project({ productName: 1 })
-                    .toArray();
+            requests.forEach(reqItem => {
+                const name = reqItem.productName;
+                requestCountMap[name] = (requestCountMap[name] || 0) + 1;
+            });
 
-                const requestCountMap = {};
+            const result = Object.entries(requestCountMap)
+                .map(([name, requests]) => ({ name, requests }))
+                .sort((a, b) => b.requests - a.requests)
+                .slice(0, 5);
 
-                requests.forEach(reqItem => {
-                    const name = reqItem.productName;
-                    requestCountMap[name] = (requestCountMap[name] || 0) + 1;
-                });
-
-                const result = Object.entries(requestCountMap)
-                    .map(([name, requests]) => ({ name, requests }))
-                    .sort((a, b) => b.requests - a.requests)
-                    .slice(0, 5);
-
-                res.send(result);
-            }
+            res.send(result);
+        }
         );
 
         app.patch('/assets/:id', verifyToken, verifyHR, async (req, res) => {
@@ -491,6 +503,8 @@ async function run() {
             const request = {
                 assetId: asset._id,
                 productName: asset.productName,
+                productImage: asset.productImage,
+                productType: asset.productType,
                 employeeEmail,
                 employeeName: employee?.name || "Unknown",
                 hrEmail: asset.hrEmail,
@@ -570,6 +584,10 @@ async function run() {
                     assets: {
                         assetId: asset._id,
                         productName: asset.productName,
+                        productImage: asset.productImage,
+                        productType: asset.productType,
+                        companyName: asset.companyName,
+                        hrEmail: asset.hrEmail,
                         assignedDate: new Date(),
                     },
                 },
@@ -610,6 +628,61 @@ async function run() {
         }
         );
 
+        app.get("/asset-requests/employee", verifyToken, verifyEmployee, async (req, res) => {
+            try {
+                const employeeEmail = req.decoded.email;
+                const requests = await requestCollection
+                    .find({ employeeEmail, status: "approved" })
+                    .sort({ requestDate: -1 })
+                    .toArray();
+                res.send(requests);
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
+
+        // Delete an asset request (HR only)
+        app.delete("/requests/:id", verifyToken, verifyHR, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const hrEmail = req.decoded.email;
+
+                // Find the request
+                const request = await requestCollection.findOne({ _id: new ObjectId(id), hrEmail });
+                if (!request) {
+                    return res.status(404).send({ message: "Request not found" });
+                }
+
+                // Optional: if already approved, return the asset quantity
+                if (request.status === "approved") {
+                    await assetsCollection.updateOne(
+                        { _id: request.assetId },
+                        { $inc: { productQuantity: 1 } }
+                    );
+
+                    // Remove asset from employee
+                    await usersCollection.updateOne(
+                        { email: request.employeeEmail },
+                        { $pull: { assets: { assetId: request.assetId } } }
+                    );
+
+                    // Decrement HR currentEmployees
+                    await usersCollection.updateOne(
+                        { email: hrEmail },
+                        { $inc: { currentEmployees: -1 } }
+                    );
+                }
+
+                // Delete the request
+                await requestCollection.deleteOne({ _id: new ObjectId(id), hrEmail });
+
+                res.send({ success: true, message: "Request deleted successfully" });
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
 
 
 
@@ -620,8 +693,9 @@ async function run() {
 
 
 
-        // await client.db("admin").command({ ping: 1 });
-        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
+
+        await client.db("admin").command({ ping: 1 });
+        console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
 
     }
