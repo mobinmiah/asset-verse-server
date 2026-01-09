@@ -2,13 +2,11 @@ require('dotenv').config();
 const express = require('express')
 const cors = require('cors')
 const app = express()
-// const crypto = require("crypto");
 const port = process.env.PORT || 3000
 const admin = require("firebase-admin");
 const jwt = require("jsonwebtoken");
 const stripe = require('stripe')(process.env.STRIPE_KEY);
 
-// const serviceAccount = require("./asset-verse-firebase-admin-sdk.json");
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
 const serviceAccount = JSON.parse(decoded);
 
@@ -87,6 +85,19 @@ async function run() {
             next()
         }
 
+
+        // verify admin middleware with database access
+        const verifyAdmin = async (req, res, next) => {
+            const email = req.decoded.email
+            const query = { email }
+            const adminUser = await admin.findOne(query)
+
+            if (!adminUser || adminUser.role !== 'admin') {
+                return res.status(403).send({ message: 'Forbidden access' })
+            }
+            next()
+        }
+        
         // verify employee middleware with database access
         const verifyEmployee = async (req, res, next) => {
             const email = req.decoded.email
@@ -99,20 +110,31 @@ async function run() {
             next()
         }
 
-        // jwt api
-        app.post("/jwt", async (req, res) => {
-            const user = req.body;
-            const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
-                expiresIn: "7d",
+            // jwt api
+            app.post("/jwt", async (req, res) => {
+                const user = req.body;
+                const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
+                    expiresIn: "7d",
+                });
+                res.send({ token });
             });
-            res.send({ token });
-        });
 
 
         // global apis
         app.get('/', (req, res) => {
             res.send('Asset Verse Server is Running')
         })
+
+        // admin apis
+        app.get("/admin/:email", verifyToken, verifyAdmin, async (req, res) => {
+            const email = req.params.email;
+            if (email !== req.decoded.email) {
+                return res.status(403).send({ message: 'Forbidden access' });
+            }
+            const query = { email };
+            const result = await admin.findOne(query);
+            res.send(result);
+        });
 
         // packages api
         app.get('/packages', async (req, res) => {
@@ -278,7 +300,12 @@ async function run() {
             }
         });
 
-
+        app.get('/users/:email/role', verifyToken, async (req, res) => {
+            const email = req.params.email
+            const query = { email }
+            const user = await usersCollection.findOne(query)
+            res.send({ role: user?.role || 'employee' })
+        })
         app.get('/users/:email', verifyToken, async (req, res) => {
             const email = req.params.email
             if (email !== req.decoded.email) {
@@ -288,12 +315,6 @@ async function run() {
             res.send(result)
         })
 
-        app.get('/users/:email/role', verifyToken, async (req, res) => {
-            const email = req.params.email
-            const query = { email }
-            const user = await usersCollection.findOne(query)
-            res.send({ role: user?.role || 'employee' })
-        })
 
         app.patch("/users/:email", verifyToken, async (req, res) => {
             const email = req.params.email;
