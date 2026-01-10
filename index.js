@@ -552,7 +552,63 @@ async function run() {
             const result = await assetsCollection.deleteOne(query)
             res.send(result)
         })
+        app.get("/organizations-for-admin", verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const organizations = await usersCollection
+                    .find({ role: "hr" })
+                    .project({
+                        name: 1,
+                        email: 1,
+                        companyName: 1,
+                        companyLogo: 1,
+                        subscription: 1,
+                        packageLimit: 1,
+                        currentEmployees: 1,
+                        paid: 1,
+                        createdAt: 1,
+                        updatedAt: 1,
+                        phone: 1,
+                        address: 1
+                    })
+                    .sort({ createdAt: -1 })
+                    .toArray();
 
+                // Get asset counts and employee counts for each organization
+                const orgsWithCounts = await Promise.all(
+                    organizations.map(async (org) => {
+                        // Count assets belonging to this HR
+                        const assetCount = await assetsCollection.countDocuments({ hrEmail: org.email });
+
+                        // Count employees belonging to this HR (using affiliations)
+                        const employeeCount = await usersCollection.countDocuments({
+                            role: "employee",
+                            "affiliations.hrEmail": org.email
+                        });
+
+                        // Sync the currentEmployees field to ensure accuracy
+                        if (employeeCount !== org.currentEmployees) {
+                            await usersCollection.updateOne(
+                                { email: org.email },
+                                { $set: { currentEmployees: employeeCount } }
+                            );
+                        }
+
+                        return {
+                            ...org,
+                            assetCount,
+                            actualEmployees: employeeCount,
+                            currentEmployees: employeeCount // Update with real count
+                        };
+                    })
+                );
+
+                console.log('Organizations with counts:', orgsWithCounts);
+                res.send(orgsWithCounts);
+            } catch (error) {
+                console.error('Error fetching organizations for admin:', error);
+                res.status(500).send({ message: 'Server error' });
+            }
+        });
         // request apis
         app.post("/asset-requests", verifyToken, verifyEmployee, async (req, res) => {
             const { assetId } = req.body;
