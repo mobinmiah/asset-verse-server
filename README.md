@@ -2,7 +2,6 @@
 
 **Purpose:** Corporate Asset Management System  
 
-**Live URL / API Base URL:**[(https://asset-verse-server-dun.vercel.app/)]
 
 ---
 

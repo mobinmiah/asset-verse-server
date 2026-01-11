@@ -19,29 +19,19 @@ admin.initializeApp({
 app.use(cors())
 app.use(express.json())
 
-// Request logging middleware
-app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
-    next();
-});
 
 const verifyToken = (req, res, next) => {
-    console.log("verifyToken middleware called");
     const authHeader = req.headers.authorization;
 
     if (!authHeader) {
-        console.log("No authorization header found");
         return res.status(401).send({ message: "Unauthorized access" });
     }
 
     const token = authHeader.split(" ")[1];
-    console.log("Token found, verifying...");
     jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
         if (err) {
-            console.log("Token verification failed:", err.message);
             return res.status(403).send({ message: "Forbidden access" });
         }
-        console.log("Token verified for user:", decoded.email);
         req.decoded = decoded;
         next();
     });
@@ -64,8 +54,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
     try {
-        await client.connect();
-        console.log("Connected to MongoDB successfully");
+        // await client.connect();
 
         const db = client.db("assetVerseDB")
         const admin = db.collection("admin")
@@ -73,18 +62,6 @@ async function run() {
         const usersCollection = db.collection("users")
         const assetsCollection = db.collection("assets")
         const requestCollection = db.collection('requests')
-
-        async function syncCurrentEmployees(hrEmail) {
-            const count = await usersCollection.countDocuments({
-                role: "employee",
-                "affiliations.hrEmail": hrEmail
-            });
-
-            await usersCollection.updateOne(
-                { email: hrEmail },
-                { $set: { currentEmployees: count } }
-            );
-        }
 
         // verify hr middleware with database access
         const verifyHR = async (req, res, next) => {
@@ -100,24 +77,14 @@ async function run() {
 
         // verify employee middleware with database access
         const verifyEmployee = async (req, res, next) => {
-            console.log("verifyEmployee middleware called for:", req.decoded.email);
             const email = req.decoded.email
-            console.log("Checking employee with email:", email);
             const query = { email }
             const user = await usersCollection.findOne(query)
-            console.log("Found user:", user ? `${user.name} (role: "${user.role}")` : "No user found");
-
-            if (!user) {
-                console.log("Access denied - no user found");
-                return res.status(403).send({ message: 'User not found' })
-            }
 
             if (user.role !== 'employee') {
-                console.log("Access denied - user role:", `"${user.role}"`, "expected: 'employee'");
                 return res.status(403).send({ message: `Access denied. User role is "${user.role}", expected "employee"` })
             }
 
-            console.log("Employee verification successful for:", user.name);
             next()
         }
 
@@ -135,12 +102,10 @@ async function run() {
 
         // jwt api
         app.post("/jwt", async (req, res) => {
-            console.log("JWT endpoint called with:", req.body);
             const user = req.body;
             const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
                 expiresIn: "7d",
             });
-            console.log("Token generated for user:", user.email);
             res.send({ token });
         });
 
@@ -248,7 +213,7 @@ async function run() {
 
 
         // Get admin profile
-        app.get("/admin/:email", verifyToken, verifyAdmin, async (req, res) => {
+        app.get("/admin/:email", verifyToken, async (req, res) => {
             const email = req.params.email;
             if (email !== req.decoded.email) {
                 return res.status(403).send({ message: 'Forbidden access' });
@@ -262,7 +227,6 @@ async function run() {
             try {
                 const users = await usersCollection.find().toArray();
 
-                // Add asset count for HR users
                 const enrichedUsers = await Promise.all(users.map(async (user) => {
                     if (user.role === 'hr') {
                         // Count assets belonging to this HR
@@ -272,7 +236,6 @@ async function run() {
                     return user;
                 }));
 
-                console.log('Users with asset counts:', enrichedUsers);
                 res.send(enrichedUsers);
             } catch (error) {
                 console.error('Error fetching users for admin:', error);
@@ -331,17 +294,14 @@ async function run() {
                     })
                 );
 
-                console.log('Organizations with counts:', orgsWithCounts);
                 res.send(orgsWithCounts);
             } catch (error) {
-                console.error('Error fetching organizations for admin:', error);
                 res.status(500).send({ message: 'Server error' });
             }
         });
 
         app.get("/users", verifyToken, async (req, res) => {
             const result = await usersCollection.find().toArray();
-            console.log(result)
             res.send(result);
         });
 
@@ -521,7 +481,6 @@ async function run() {
 
                 // If this is an HR user, update all related records with any changed HR information
                 if (currentUser.role === 'hr') {
-                    console.log(`HR ${email} updated profile. Cascading changes to all related records...`);
 
                     // Prepare update object for assets and requests
                     const assetUpdates = {};
@@ -531,37 +490,31 @@ async function run() {
                     if (updatedData.companyName && updatedData.companyName !== currentUser.companyName) {
                         assetUpdates.companyName = updatedData.companyName;
                         affiliationUpdates["affiliations.$.companyName"] = updatedData.companyName;
-                        console.log(`- Company name changed: "${currentUser.companyName}" → "${updatedData.companyName}"`);
                     }
 
                     if (updatedData.companyLogo && updatedData.companyLogo !== currentUser.companyLogo) {
                         assetUpdates.companyLogo = updatedData.companyLogo;
                         affiliationUpdates["affiliations.$.companyLogo"] = updatedData.companyLogo;
-                        console.log(`- Company logo changed`);
                     }
 
                     if (updatedData.name && updatedData.name !== currentUser.name) {
                         assetUpdates.hrName = updatedData.name;
                         affiliationUpdates["affiliations.$.hrName"] = updatedData.name;
-                        console.log(`- HR name changed: "${currentUser.name}" → "${updatedData.name}"`);
                     }
 
                     if (updatedData.phone && updatedData.phone !== currentUser.phone) {
                         assetUpdates.hrPhone = updatedData.phone;
                         affiliationUpdates["affiliations.$.hrPhone"] = updatedData.phone;
-                        console.log(`- HR phone changed`);
                     }
 
                     if (updatedData.address && updatedData.address !== currentUser.address) {
                         assetUpdates.companyAddress = updatedData.address;
                         affiliationUpdates["affiliations.$.companyAddress"] = updatedData.address;
-                        console.log(`- Company address changed`);
                     }
 
                     if (updatedData.department && updatedData.department !== currentUser.department) {
                         assetUpdates.hrDepartment = updatedData.department;
                         affiliationUpdates["affiliations.$.hrDepartment"] = updatedData.department;
-                        console.log(`- HR department changed`);
                     }
 
                     // Only update if there are changes
@@ -573,14 +526,12 @@ async function run() {
                             { hrEmail: email },
                             { $set: assetUpdates }
                         );
-                        console.log(`- Updated ${assetUpdateResult.modifiedCount} assets`);
 
                         // Update all asset requests for this HR
                         const requestUpdateResult = await requestCollection.updateMany(
                             { hrEmail: email },
                             { $set: assetUpdates }
                         );
-                        console.log(`- Updated ${requestUpdateResult.modifiedCount} asset requests`);
 
                         // Update employee affiliations
                         if (Object.keys(affiliationUpdates).length > 0) {
@@ -589,12 +540,9 @@ async function run() {
                                 { "affiliations.hrEmail": email },
                                 { $set: affiliationUpdates }
                             );
-                            console.log(`- Updated ${affiliationUpdateResult.modifiedCount} employee affiliations`);
                         }
 
-                        console.log("✅ All related records updated successfully");
                     } else {
-                        console.log("- No asset-related fields changed, skipping cascade updates");
                     }
                 }
 
@@ -682,7 +630,6 @@ async function run() {
 
         app.get("/assets", verifyToken, async (req, res) => {
             try {
-                console.log('Assets endpoint accessed by:', req.decoded.email);
                 const searchText = req.query.searchText || "";
                 const page = parseInt(req.query.page) || 1;
                 const limit = parseInt(req.query.limit) || 0;
@@ -693,9 +640,7 @@ async function run() {
 
                 // Check user role
                 const adminUser = await admin.findOne({ email });
-                console.log('Admin user check:', adminUser);
                 const isAdmin = adminUser && adminUser.role === 'admin';
-                console.log('Is admin:', isAdmin);
 
                 let query = {};
                 let baseQuery = {}; // For stats calculation
@@ -1133,43 +1078,26 @@ async function run() {
             }
         });
 
-        // Return routes MUST come before /assets/:id to avoid route conflicts
-        // Return an asset (Employee only)
-        console.log("🔧 Registering /assets/return route...");
         app.patch("/assets/return", verifyToken, verifyEmployee, async (req, res) => {
             try {
-                console.log("🔄 Return asset request received:", req.body);
-                console.log("🔄 Employee email:", req.decoded.email);
-
                 const { assetId } = req.body;
                 const employeeEmail = req.decoded.email;
 
                 if (!assetId) {
-                    console.log("❌ No asset ID provided");
                     return res.status(400).send({ message: "Asset ID is required" });
                 }
 
-                console.log("🔄 Asset ID received:", assetId);
-
-                // Convert assetId to ObjectId for database queries
                 let assetObjectId;
                 try {
                     assetObjectId = new ObjectId(assetId);
-                    console.log("🔄 Converted to ObjectId:", assetObjectId);
                 } catch (error) {
-                    console.log("❌ Invalid asset ID format:", error.message);
                     return res.status(400).send({ message: "Invalid asset ID format" });
                 }
 
                 // Find the asset
-                console.log("🔍 Searching for asset with ID:", assetObjectId);
                 const asset = await assetsCollection.findOne({ _id: assetObjectId });
-                console.log("🔍 Found asset:", asset ? `${asset.productName} (${asset.productType})` : "No asset found");
 
-                // If asset doesn't exist, it might have been deleted by HR
-                // In this case, we should clean up the employee's profile
                 if (!asset) {
-                    console.log("🧹 Asset not found - cleaning up employee profile");
 
                     // Remove the non-existent asset from employee's profile
                     const cleanupResult = await usersCollection.updateOne(
@@ -1183,8 +1111,6 @@ async function run() {
                             $set: { updatedAt: new Date() }
                         }
                     );
-
-                    console.log("🧹 Cleanup result:", cleanupResult.modifiedCount > 0 ? "Profile cleaned" : "No cleanup needed");
 
                     // Also clean up any related requests
                     await requestCollection.updateMany(
@@ -1207,19 +1133,11 @@ async function run() {
 
                 // Check if asset is returnable
                 if (asset.productType !== "Returnable") {
-                    console.log("❌ Asset is not returnable:", asset.productType);
                     return res.status(400).send({ message: "This asset is not returnable" });
                 }
 
                 // Check if the asset is assigned to this employee
                 const employee = await usersCollection.findOne({ email: employeeEmail });
-                console.log("👤 Employee found:", employee ? `${employee.name} with ${employee.assets?.length || 0} assets` : "No employee found");
-                console.log("👤 Employee assets:", employee?.assets?.map(a => ({
-                    id: a.assetId,
-                    name: a.productName,
-                    idType: typeof a.assetId,
-                    idString: a.assetId?.toString()
-                })) || []);
 
                 if (!employee || !employee.assets) {
                     return res.status(400).send({ message: "No assets assigned to you" });
@@ -1233,13 +1151,9 @@ async function run() {
                     return employeeAssetId === requestAssetId;
                 });
 
-                console.log("🔍 Employee has asset:", assignedAsset ? "Yes" : "No");
                 if (!assignedAsset) {
-                    console.log("📋 Employee assets:", employee.assets.map(a => ({ id: a.assetId, name: a.productName })));
                     return res.status(400).send({ message: "Asset is not assigned to you" });
                 }
-
-                console.log("🔄 Starting asset return process...");
 
                 // Update asset - increment quantity and set to available
                 const assetUpdateResult = await assetsCollection.updateOne(
@@ -1255,7 +1169,6 @@ async function run() {
                         }
                     }
                 );
-                console.log("📦 Asset updated:", assetUpdateResult.modifiedCount > 0 ? "Yes" : "No");
 
                 // Remove asset from employee's assets (use proper ObjectId comparison)
                 const employeeUpdateResult = await usersCollection.updateOne(
@@ -1269,7 +1182,6 @@ async function run() {
                         $set: { updatedAt: new Date() }
                     }
                 );
-                console.log("👤 Employee updated:", employeeUpdateResult.modifiedCount > 0 ? "Yes" : "No");
 
                 // Update the asset request status to returned
                 const requestUpdateResult = await requestCollection.updateOne(
@@ -1282,9 +1194,7 @@ async function run() {
                         }
                     }
                 );
-                console.log("📝 Request updated:", requestUpdateResult.modifiedCount > 0 ? "Yes" : "No");
 
-                console.log("✅ Asset return completed successfully");
                 res.send({
                     success: true,
                     message: "Asset returned successfully and is now available for other employees"
@@ -1357,8 +1267,6 @@ async function run() {
                 const email = req.decoded.email;
                 const assetObjectId = new ObjectId(id);
 
-                console.log(`🗑️ HR ${email} is deleting asset ${id}`);
-
                 // First, find the asset to get its details
                 const asset = await assetsCollection.findOne({
                     _id: assetObjectId,
@@ -1369,8 +1277,6 @@ async function run() {
                     return res.status(404).send({ message: "Asset not found or access denied" });
                 }
 
-                console.log(`🗑️ Deleting asset: ${asset.productName}`);
-
                 // 1. Remove asset from all employee profiles
                 const employeeUpdateResult = await usersCollection.updateMany(
                     { "assets.assetId": assetObjectId },
@@ -1379,26 +1285,22 @@ async function run() {
                         $set: { updatedAt: new Date() }
                     }
                 );
-                console.log(`🗑️ Removed asset from ${employeeUpdateResult.modifiedCount} employee profiles`);
 
                 // 2. Delete all asset requests related to this asset
                 const requestDeleteResult = await requestCollection.deleteMany({
                     assetId: assetObjectId
                 });
-                console.log(`🗑️ Deleted ${requestDeleteResult.deletedCount} asset requests`);
 
                 // 3. Finally, delete the asset itself
                 const assetDeleteResult = await assetsCollection.deleteOne({
                     _id: assetObjectId,
                     hrEmail: email,
                 });
-                console.log(`🗑️ Asset deleted from assets collection:`, assetDeleteResult.deletedCount > 0 ? "YES" : "NO");
 
                 if (assetDeleteResult.deletedCount === 0) {
                     return res.status(404).send({ message: "Asset not found" });
                 }
 
-                console.log(`✅ Asset ${asset.productName} completely removed from system`);
                 res.send({
                     success: true,
                     message: "Asset and all references deleted successfully",
@@ -1410,7 +1312,6 @@ async function run() {
                 });
 
             } catch (error) {
-                console.error("Asset deletion error:", error);
                 res.status(500).send({ message: "Server error", error: error.message });
             }
         })
@@ -1597,26 +1498,22 @@ async function run() {
 
         // Test endpoint
         app.get("/test", (req, res) => {
-            console.log("Test endpoint hit");
             res.send({ message: "Server is working!" });
         });
 
         // Test authenticated endpoint
         app.get("/test-auth", verifyToken, (req, res) => {
-            console.log("Authenticated test endpoint hit by:", req.decoded.email);
             res.send({ message: "Authentication working!", user: req.decoded });
         });
 
         // Test employee endpoint
         app.get("/test-employee", verifyToken, verifyEmployee, (req, res) => {
-            console.log("Employee test endpoint hit by:", req.decoded.email);
             res.send({ message: "Employee authentication working!", user: req.decoded });
         });
 
         // Test return endpoint (simple test)
         app.patch("/test-return", verifyToken, verifyEmployee, (req, res) => {
-            console.log("Simple return test endpoint hit by:", req.decoded.email);
-            console.log("Request body:", req.body);
+
             res.send({
                 success: true,
                 message: "Simple return test working!",
@@ -1627,8 +1524,7 @@ async function run() {
 
         // Test direct return endpoint (no auth for testing)
         app.patch("/test-direct-return", (req, res) => {
-            console.log("Direct return test endpoint hit");
-            console.log("Request body:", req.body);
+
             res.send({
                 success: true,
                 message: "Direct return test working!",
@@ -1642,13 +1538,6 @@ async function run() {
                 const employeeEmail = req.decoded.email;
                 const employee = await usersCollection.findOne({ email: employeeEmail });
 
-                console.log("🔍 Debug - Employee assets:", employee?.assets?.map(a => ({
-                    id: a.assetId,
-                    name: a.productName,
-                    idType: typeof a.assetId,
-                    idString: a.assetId?.toString()
-                })) || []);
-
                 // Check if these assets exist in the assets collection
                 if (employee?.assets) {
                     for (const empAsset of employee.assets) {
@@ -1656,12 +1545,9 @@ async function run() {
                         try {
                             assetObjectId = new ObjectId(empAsset.assetId);
                         } catch (error) {
-                            console.log("❌ Invalid asset ID in employee profile:", empAsset.assetId);
                             continue;
                         }
-
                         const actualAsset = await assetsCollection.findOne({ _id: assetObjectId });
-                        console.log(`🔍 Asset ${empAsset.assetId} exists in collection:`, actualAsset ? "YES" : "NO");
                     }
                 }
 

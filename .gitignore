@@ -2,3 +2,4 @@ node_modules
 .env
 asset-verse-firebase-admin-sdk.json
 key.js
+index-backupd.js
