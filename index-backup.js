@@ -19,12 +19,6 @@ admin.initializeApp({
 app.use(cors())
 app.use(express.json())
 
-// Request logging middleware
-app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
-    next();
-});
-
 const verifyToken = (req, res, next) => {
     console.log("verifyToken middleware called");
     const authHeader = req.headers.authorization;
@@ -64,8 +58,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
     try {
-        await client.connect();
-        console.log("Connected to MongoDB successfully");
+        // await client.connect();
 
         const db = client.db("assetVerseDB")
         const admin = db.collection("admin")
@@ -452,24 +445,6 @@ async function run() {
                 return res.status(403).send({ message: 'Forbidden access' })
             }
             const result = await usersCollection.findOne({ email })
-
-            // If this is an HR user, sync their currentEmployees count
-            if (result && result.role === 'hr') {
-                const actualEmployeeCount = await usersCollection.countDocuments({
-                    role: "employee",
-                    "affiliations.hrEmail": email
-                });
-
-                // Update the currentEmployees field if it's different
-                if (actualEmployeeCount !== result.currentEmployees) {
-                    await usersCollection.updateOne(
-                        { email: email },
-                        { $set: { currentEmployees: actualEmployeeCount } }
-                    );
-                    result.currentEmployees = actualEmployeeCount;
-                }
-            }
-
             res.send(result)
         })
 
@@ -1135,7 +1110,6 @@ async function run() {
 
         // Return routes MUST come before /assets/:id to avoid route conflicts
         // Return an asset (Employee only)
-        console.log("🔧 Registering /assets/return route...");
         app.patch("/assets/return", verifyToken, verifyEmployee, async (req, res) => {
             try {
                 console.log("🔄 Return asset request received:", req.body);
@@ -1155,54 +1129,16 @@ async function run() {
                 let assetObjectId;
                 try {
                     assetObjectId = new ObjectId(assetId);
-                    console.log("🔄 Converted to ObjectId:", assetObjectId);
                 } catch (error) {
                     console.log("❌ Invalid asset ID format:", error.message);
                     return res.status(400).send({ message: "Invalid asset ID format" });
                 }
 
                 // Find the asset
-                console.log("🔍 Searching for asset with ID:", assetObjectId);
                 const asset = await assetsCollection.findOne({ _id: assetObjectId });
                 console.log("🔍 Found asset:", asset ? `${asset.productName} (${asset.productType})` : "No asset found");
-
-                // If asset doesn't exist, it might have been deleted by HR
-                // In this case, we should clean up the employee's profile
                 if (!asset) {
-                    console.log("🧹 Asset not found - cleaning up employee profile");
-
-                    // Remove the non-existent asset from employee's profile
-                    const cleanupResult = await usersCollection.updateOne(
-                        { email: employeeEmail },
-                        {
-                            $pull: {
-                                assets: {
-                                    assetId: assetObjectId
-                                }
-                            },
-                            $set: { updatedAt: new Date() }
-                        }
-                    );
-
-                    console.log("🧹 Cleanup result:", cleanupResult.modifiedCount > 0 ? "Profile cleaned" : "No cleanup needed");
-
-                    // Also clean up any related requests
-                    await requestCollection.updateMany(
-                        { assetId: assetObjectId, employeeEmail: employeeEmail },
-                        {
-                            $set: {
-                                status: "cancelled",
-                                note: "Asset was deleted by HR",
-                                updatedAt: new Date()
-                            }
-                        }
-                    );
-
-                    return res.send({
-                        success: true,
-                        message: "Asset was already removed from the system. Your profile has been updated.",
-                        cleaned: true
-                    });
+                    return res.status(404).send({ message: "Asset not found" });
                 }
 
                 // Check if asset is returnable
@@ -1214,12 +1150,6 @@ async function run() {
                 // Check if the asset is assigned to this employee
                 const employee = await usersCollection.findOne({ email: employeeEmail });
                 console.log("👤 Employee found:", employee ? `${employee.name} with ${employee.assets?.length || 0} assets` : "No employee found");
-                console.log("👤 Employee assets:", employee?.assets?.map(a => ({
-                    id: a.assetId,
-                    name: a.productName,
-                    idType: typeof a.assetId,
-                    idString: a.assetId?.toString()
-                })) || []);
 
                 if (!employee || !employee.assets) {
                     return res.status(400).send({ message: "No assets assigned to you" });
@@ -1352,67 +1282,18 @@ async function run() {
         });
 
         app.delete('/assets/:id', verifyToken, verifyHR, async (req, res) => {
-            try {
-                const id = req.params.id;
-                const email = req.decoded.email;
-                const assetObjectId = new ObjectId(id);
+            const id = req.params.id;
+            const email = req.decoded.email;
+            const query = {
+                _id: new ObjectId(id),
+                hrEmail: email,
+            };
 
-                console.log(`🗑️ HR ${email} is deleting asset ${id}`);
-
-                // First, find the asset to get its details
-                const asset = await assetsCollection.findOne({
-                    _id: assetObjectId,
-                    hrEmail: email,
-                });
-
-                if (!asset) {
-                    return res.status(404).send({ message: "Asset not found or access denied" });
-                }
-
-                console.log(`🗑️ Deleting asset: ${asset.productName}`);
-
-                // 1. Remove asset from all employee profiles
-                const employeeUpdateResult = await usersCollection.updateMany(
-                    { "assets.assetId": assetObjectId },
-                    {
-                        $pull: { assets: { assetId: assetObjectId } },
-                        $set: { updatedAt: new Date() }
-                    }
-                );
-                console.log(`🗑️ Removed asset from ${employeeUpdateResult.modifiedCount} employee profiles`);
-
-                // 2. Delete all asset requests related to this asset
-                const requestDeleteResult = await requestCollection.deleteMany({
-                    assetId: assetObjectId
-                });
-                console.log(`🗑️ Deleted ${requestDeleteResult.deletedCount} asset requests`);
-
-                // 3. Finally, delete the asset itself
-                const assetDeleteResult = await assetsCollection.deleteOne({
-                    _id: assetObjectId,
-                    hrEmail: email,
-                });
-                console.log(`🗑️ Asset deleted from assets collection:`, assetDeleteResult.deletedCount > 0 ? "YES" : "NO");
-
-                if (assetDeleteResult.deletedCount === 0) {
-                    return res.status(404).send({ message: "Asset not found" });
-                }
-
-                console.log(`✅ Asset ${asset.productName} completely removed from system`);
-                res.send({
-                    success: true,
-                    message: "Asset and all references deleted successfully",
-                    details: {
-                        assetDeleted: assetDeleteResult.deletedCount,
-                        employeesUpdated: employeeUpdateResult.modifiedCount,
-                        requestsDeleted: requestDeleteResult.deletedCount
-                    }
-                });
-
-            } catch (error) {
-                console.error("Asset deletion error:", error);
-                res.status(500).send({ message: "Server error", error: error.message });
+            if (!email) {
+                return res.status(403).send({ message: "Forbidden access" });
             }
+            const result = await assetsCollection.deleteOne(query)
+            res.send(result)
         })
 
         // request apis
@@ -1607,569 +1488,606 @@ async function run() {
             res.send({ message: "Authentication working!", user: req.decoded });
         });
 
-        // Test employee endpoint
-        app.get("/test-employee", verifyToken, verifyEmployee, (req, res) => {
-            console.log("Employee test endpoint hit by:", req.decoded.email);
-            res.send({ message: "Employee authentication working!", user: req.decoded });
-        });
-
-        // Test return endpoint (simple test)
-        app.patch("/test-return", verifyToken, verifyEmployee, (req, res) => {
-            console.log("Simple return test endpoint hit by:", req.decoded.email);
-            console.log("Request body:", req.body);
-            res.send({
-                success: true,
-                message: "Simple return test working!",
-                user: req.decoded.email,
-                body: req.body
-            });
-        });
-
-        // Test direct return endpoint (no auth for testing)
-        app.patch("/test-direct-return", (req, res) => {
-            console.log("Direct return test endpoint hit");
-            console.log("Request body:", req.body);
-            res.send({
-                success: true,
-                message: "Direct return test working!",
-                body: req.body
-            });
-        });
-
-        // Debug employee assets endpoint
-        app.get("/debug-employee-assets", verifyToken, verifyEmployee, async (req, res) => {
-            try {
-                const employeeEmail = req.decoded.email;
-                const employee = await usersCollection.findOne({ email: employeeEmail });
-
-                console.log("🔍 Debug - Employee assets:", employee?.assets?.map(a => ({
-                    id: a.assetId,
-                    name: a.productName,
-                    idType: typeof a.assetId,
-                    idString: a.assetId?.toString()
-                })) || []);
-
-                // Check if these assets exist in the assets collection
-                if (employee?.assets) {
-                    for (const empAsset of employee.assets) {
-                        let assetObjectId;
-                        try {
-                            assetObjectId = new ObjectId(empAsset.assetId);
-                        } catch (error) {
-                            console.log("❌ Invalid asset ID in employee profile:", empAsset.assetId);
-                            continue;
-                        }
-
-                        const actualAsset = await assetsCollection.findOne({ _id: assetObjectId });
-                        console.log(`🔍 Asset ${empAsset.assetId} exists in collection:`, actualAsset ? "YES" : "NO");
-                    }
-                }
-
-                res.send({
-                    employee: employee?.name,
-                    assets: employee?.assets || [],
-                    message: "Check console for detailed logs"
-                });
-            } catch (error) {
-                console.error("Debug error:", error);
-                res.status(500).send({ error: error.message });
-            }
-        });
-
         // ============= ADMIN APIs =============
 
         // Admin - Update admin profile
-        app.delete("/requests/:id", verifyToken, verifyHR, async (req, res) => {
-            try {
-                const { id } = req.params;
-                const hrEmail = req.decoded.email;
+        const { assetId } = req.body;
+        const employeeEmail = req.decoded.email;
+        console.log("Employee email:", employeeEmail, "Asset ID:", assetId);
 
-                // Find the request
-                const request = await requestCollection.findOne({ _id: new ObjectId(id), hrEmail });
-                if (!request) {
-                    return res.status(404).send({ message: "Request not found" });
+        if (!assetId) {
+            return res.status(400).send({ message: "Asset ID is required" });
+        }
+
+        // Convert assetId to ObjectId for database queries
+        let assetObjectId;
+        try {
+            assetObjectId = new ObjectId(assetId);
+        } catch (error) {
+            return res.status(400).send({ message: "Invalid asset ID format" });
+        }
+
+        // Find the asset
+        const asset = await assetsCollection.findOne({ _id: assetObjectId });
+        console.log("Found asset:", asset ? `${asset.productName} (${asset.productType})` : "No");
+        if (!asset) {
+            return res.status(404).send({ message: "Asset not found" });
+        }
+
+        // Check if asset is returnable
+        if (asset.productType !== "Returnable") {
+            return res.status(400).send({ message: "This asset is not returnable" });
+        }
+
+        // Check if the asset is assigned to this employee
+        const employee = await usersCollection.findOne({ email: employeeEmail });
+        console.log("Employee found:", employee ? `${employee.name} with ${employee.assets?.length || 0} assets` : "No");
+
+        if (!employee || !employee.assets) {
+            return res.status(400).send({ message: "No assets assigned to you" });
+        }
+
+        // Find the asset in employee's assets (compare ObjectId properly)
+        const assignedAsset = employee.assets.find(a => {
+            // Handle both string and ObjectId formats
+            const employeeAssetId = typeof a.assetId === 'string' ? a.assetId : a.assetId.toString();
+            const requestAssetId = assetId.toString();
+            return employeeAssetId === requestAssetId;
+        });
+
+        console.log("Employee has asset:", assignedAsset ? "Yes" : "No");
+        if (!assignedAsset) {
+            console.log("Employee assets:", employee.assets.map(a => ({ id: a.assetId, name: a.productName })));
+            return res.status(400).send({ message: "Asset is not assigned to you" });
+        }
+
+        // Update asset - increment quantity and set to available
+        const assetUpdateResult = await assetsCollection.updateOne(
+            { _id: assetObjectId },
+            {
+                $inc: { productQuantity: 1 },
+                $set: {
+                    status: "Available",
+                    assignedTo: null,
+                    assignedEmployeeName: null,
+                    assignedDate: null,
+                    updatedAt: new Date()
                 }
+            }
+        );
+        console.log("Asset updated:", assetUpdateResult.modifiedCount > 0 ? "Yes" : "No");
 
-                // Optional: if already approved, return the asset quantity
-                if (request.status === "approved") {
-                    await assetsCollection.updateOne(
-                        { _id: request.assetId },
-                        { $inc: { productQuantity: 1 } }
-                    );
+        // Remove asset from employee's assets (use proper ObjectId comparison)
+        const employeeUpdateResult = await usersCollection.updateOne(
+            { email: employeeEmail },
+            {
+                $pull: {
+                    assets: {
+                        assetId: assetObjectId
+                    }
+                },
+                $set: { updatedAt: new Date() }
+            }
+        );
+        console.log("Employee updated:", employeeUpdateResult.modifiedCount > 0 ? "Yes" : "No");
 
+        // Update the asset request status to returned
+        const requestUpdateResult = await requestCollection.updateOne(
+            { assetId: assetObjectId, employeeEmail: employeeEmail, status: "approved" },
+            {
+                $set: {
+                    status: "returned",
+                    returnDate: new Date(),
+                    updatedAt: new Date()
+                }
+            }
+        );
+        console.log("Request updated:", requestUpdateResult.modifiedCount > 0 ? "Yes" : "No");
+
+        console.log("✅ Asset return completed successfully");
+        res.send({
+            success: true,
+            message: "Asset returned successfully and is now available for other employees"
+        });
+
+    } catch (err) {
+        console.error("Return asset error:", err);
+        res.status(500).send({ message: "Server error", error: err.message });
+    }
+
+
+    // Delete an asset request (HR only)
+    app.delete("/requests/:id", verifyToken, verifyHR, async (req, res) => {
+        try {
+            const { id } = req.params;
+            const hrEmail = req.decoded.email;
+
+            // Find the request
+            const request = await requestCollection.findOne({ _id: new ObjectId(id), hrEmail });
+            if (!request) {
+                return res.status(404).send({ message: "Request not found" });
+            }
+
+            // Optional: if already approved, return the asset quantity
+            if (request.status === "approved") {
+                await assetsCollection.updateOne(
+                    { _id: request.assetId },
+                    { $inc: { productQuantity: 1 } }
+                );
+
+                await assetsCollection.updateOne(
+                    { _id: request.assetId },
+                    {
+                        $set: {
+                            status: "Available",
+                            assignedTo: null,
+                            assignedEmployeeName: null,
+                            assignedDate: null,
+                            updatedAt: new Date()
+                        }
+                    }
+                );
+
+
+                // Remove asset from employee
+                await usersCollection.updateOne(
+                    { email: request.employeeEmail },
+                    { $pull: { assets: { assetId: request.assetId } } }
+                );
+
+                // Decrement HR currentEmployees
+                await usersCollection.updateOne(
+                    { email: hrEmail },
+                    { $inc: { currentEmployees: -1 } }
+                );
+            }
+
+            // Delete the request
+            await requestCollection.deleteOne({ _id: new ObjectId(id), hrEmail });
+
+            res.send({ success: true, message: "Request deleted successfully" });
+        } catch (err) {
+            console.error(err);
+            res.status(500).send({ message: "Server error" });
+        }
+    });
+
+    // ============= ADMIN APIs =============
+
+    // Admin - Update admin profile
+    app.patch("/admin/:email", verifyToken, verifyAdmin, async (req, res) => {
+        try {
+            const email = req.params.email;
+            const decodedEmail = req.decoded.email;
+
+            if (email !== decodedEmail) {
+                return res.status(403).send({ message: "Forbidden access" });
+            }
+
+            const updatedData = req.body;
+            // Prevent updating sensitive fields
+            delete updatedData.role;
+            delete updatedData.email;
+            delete updatedData._id;
+
+            // Add updated timestamp
+            updatedData.updatedAt = new Date();
+
+            const result = await admin.updateOne(
+                { email },
+                { $set: updatedData }
+            );
+
+            if (result.matchedCount === 0) {
+                return res.status(404).send({ message: "Admin not found" });
+            }
+
+            res.send({ success: true, message: "Admin profile updated successfully" });
+        } catch (error) {
+            console.error("Admin update error:", error);
+            res.status(500).send({ message: "Server error" });
+        }
+    });
+
+    // Admin Dashboard Analytics - System-wide stats
+    app.get("/admin/analytics/overview", verifyToken, verifyAdmin, async (req, res) => {
+        try {
+            const totalUsers = await usersCollection.countDocuments();
+            const totalHRs = await usersCollection.countDocuments({ role: "hr" });
+            const totalEmployees = await usersCollection.countDocuments({ role: "employee" });
+            const totalAssets = await assetsCollection.countDocuments();
+            const totalRequests = await requestCollection.countDocuments();
+            const pendingRequests = await requestCollection.countDocuments({ status: "pending" });
+            const approvedRequests = await requestCollection.countDocuments({ status: "approved" });
+
+            // Active organizations (HRs with at least 1 employee)
+            const activeOrganizations = await usersCollection.countDocuments({
+                role: "hr",
+                currentEmployees: { $gt: 0 }
+            });
+
+            res.send({
+                totalUsers,
+                totalHRs,
+                totalEmployees,
+                totalAssets,
+                totalRequests,
+                pendingRequests,
+                approvedRequests,
+                activeOrganizations
+            });
+        } catch (error) {
+            console.error(error);
+            res.status(500).send({ message: "Server error" });
+        }
+    });
+
+    // Admin - Get all users with pagination and filters
+    app.get("/admin/users", verifyToken, verifyAdmin, async (req, res) => {
+        try {
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 10;
+            const role = req.query.role;
+            const search = req.query.search || "";
+
+            const skip = (page - 1) * limit;
+
+            let query = {};
+            if (role && role !== "all") {
+                query.role = role;
+            }
+            if (search) {
+                query.$or = [
+                    { name: { $regex: search, $options: "i" } },
+                    { email: { $regex: search, $options: "i" } },
+                    { companyName: { $regex: search, $options: "i" } }
+                ];
+            }
+
+            const users = await usersCollection
+                .find(query)
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .toArray();
+
+            const total = await usersCollection.countDocuments(query);
+
+            // Calculate real-time stats (based on all users, not filtered)
+            const [totalUsers, hrCount, employeeCount] = await Promise.all([
+                usersCollection.countDocuments({}),
+                usersCollection.countDocuments({ role: 'hr' }),
+                usersCollection.countDocuments({ role: 'employee' })
+            ]);
+
+            const stats = {
+                totalUsers,
+                hrCount,
+                employeeCount
+            };
+
+            res.send({
+                users,
+                total,
+                page,
+                totalPages: Math.ceil(total / limit),
+                stats
+            });
+        } catch (error) {
+            console.error(error);
+            res.status(500).send({ message: "Server error" });
+        }
+    });
+
+    // Admin - Get all organizations (HR users)
+    app.get("/admin/organizations", verifyToken, verifyAdmin, async (req, res) => {
+        try {
+            const organizations = await usersCollection
+                .find({ role: "hr" })
+                .project({
+                    name: 1,
+                    email: 1,
+                    companyName: 1,
+                    companyLogo: 1,
+                    subscription: 1,
+                    packageLimit: 1,
+                    currentEmployees: 1,
+                    paid: 1,
+                    createdAt: 1
+                })
+                .sort({ createdAt: -1 })
+                .toArray();
+
+            // Get asset counts for each organization
+            const orgsWithAssets = await Promise.all(
+                organizations.map(async (org) => {
+                    const assetCount = await assetsCollection.countDocuments({ hrEmail: org.email });
+                    return { ...org, assetCount };
+                })
+            );
+
+            res.send(orgsWithAssets);
+        } catch (error) {
+            console.error(error);
+            res.status(500).send({ message: "Server error" });
+        }
+    });
+
+    // Admin - Get all assets across all organizations
+    app.get("/admin/assets", verifyToken, verifyAdmin, async (req, res) => {
+        try {
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 10;
+            const search = req.query.search || "";
+            const type = req.query.type;
+            const status = req.query.status;
+
+            const skip = (page - 1) * limit;
+
+            let query = {};
+            if (search) {
+                query.$or = [
+                    { productName: { $regex: search, $options: "i" } },
+                    { companyName: { $regex: search, $options: "i" } },
+                    { hrEmail: { $regex: search, $options: "i" } }
+                ];
+            }
+            if (type && type !== "all") {
+                query.productType = type;
+            }
+            if (status && status !== "all") {
+                query.status = status;
+            }
+
+            const assets = await assetsCollection
+                .find(query)
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .toArray();
+
+            const total = await assetsCollection.countDocuments(query);
+
+            res.send({
+                assets,
+                total,
+                page,
+                totalPages: Math.ceil(total / limit)
+            });
+        } catch (error) {
+            console.error(error);
+            res.status(500).send({ message: "Server error" });
+        }
+    });
+
+    // Admin - System-wide asset analytics
+    app.get("/admin/analytics/assets", verifyToken, verifyAdmin, async (req, res) => {
+        try {
+            // Asset type distribution
+            const assetTypes = await assetsCollection.aggregate([
+                { $group: { _id: "$productType", count: { $sum: 1 } } }
+            ]).toArray();
+
+            // Asset status distribution (based on quantity)
+            const assetStatus = await assetsCollection.aggregate([
+                {
+                    $group: {
+                        _id: {
+                            $cond: [
+                                { $gt: ["$productQuantity", 0] },
+                                "Available",
+                                "Out of Stock"
+                            ]
+                        },
+                        count: { $sum: 1 }
+                    }
+                }
+            ]).toArray();
+
+            // Top organizations by asset count (with better organization data)
+            const topOrganizations = await assetsCollection.aggregate([
+                {
+                    $group: {
+                        _id: "$hrEmail",
+                        count: { $sum: 1 },
+                        companyName: { $first: "$companyName" }
+                    }
+                },
+                {
+                    $lookup: {
+                        from: "users",
+                        localField: "_id",
+                        foreignField: "email",
+                        as: "hrInfo"
+                    }
+                },
+                {
+                    $addFields: {
+                        organizationName: {
+                            $cond: [
+                                { $and: [{ $ne: ["$companyName", null] }, { $ne: ["$companyName", ""] }] },
+                                "$companyName",
+                                {
+                                    $cond: [
+                                        { $gt: [{ $size: "$hrInfo" }, 0] },
+                                        { $arrayElemAt: ["$hrInfo.companyName", 0] },
+                                        { $arrayElemAt: [{ $split: ["$_id", "@"] }, 0] }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                },
+                { $sort: { count: -1 } },
+                { $limit: 10 }
+            ]).toArray();
+
+            // Monthly asset creation trends (last 6 months)
+            const sixMonthsAgo = new Date();
+            sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+            const monthlyTrends = await assetsCollection.aggregate([
+                { $match: { createdAt: { $gte: sixMonthsAgo } } },
+                {
+                    $group: {
+                        _id: {
+                            year: { $year: "$createdAt" },
+                            month: { $month: "$createdAt" }
+                        },
+                        count: { $sum: 1 }
+                    }
+                },
+                { $sort: { "_id.year": 1, "_id.month": 1 } }
+            ]).toArray();
+
+            // Format the response data for charts
+            res.send({
+                assetTypes: assetTypes.map(item => ({
+                    name: item._id || 'Unknown',
+                    value: item.count
+                })),
+                assetStatus: assetStatus.map(item => ({
+                    name: item._id || 'Unknown',
+                    value: item.count
+                })),
+                topOrganizations: topOrganizations.map(item => ({
+                    name: item.organizationName || item.companyName || item._id?.split('@')[0] || 'Unknown Organization',
+                    assets: item.count,
+                    hrEmail: item._id
+                })),
+                monthlyTrends: monthlyTrends.map(item => ({
+                    month: `${item._id.year}-${item._id.month.toString().padStart(2, '0')}`,
+                    assets: item.count
+                }))
+            });
+        } catch (error) {
+            console.error('Admin asset analytics error:', error);
+            res.status(500).send({ message: "Server error" });
+        }
+    });
+
+    // Admin - Get all requests across all organizations
+    app.get("/admin/requests", verifyToken, verifyAdmin, async (req, res) => {
+        try {
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 10;
+            const status = req.query.status;
+
+            const skip = (page - 1) * limit;
+
+            let query = {};
+            if (status && status !== "all") {
+                query.status = status;
+            }
+
+            const requests = await requestCollection
+                .find(query)
+                .sort({ requestDate: -1 })
+                .skip(skip)
+                .limit(limit)
+                .toArray();
+
+            const total = await requestCollection.countDocuments(query);
+
+            res.send({
+                requests,
+                total,
+                page,
+                totalPages: Math.ceil(total / limit)
+            });
+        } catch (error) {
+            console.error(error);
+            res.status(500).send({ message: "Server error" });
+        }
+    });
+
+    // Admin - Update user status (activate/deactivate)
+    app.patch("/admin/users/:id/status", verifyToken, verifyAdmin, async (req, res) => {
+        try {
+            const { id } = req.params;
+            const { status } = req.body; // 'active' or 'inactive'
+
+            const result = await usersCollection.updateOne(
+                { _id: new ObjectId(id) },
+                { $set: { status, updatedAt: new Date() } }
+            );
+
+            if (result.matchedCount === 0) {
+                return res.status(404).send({ message: "User not found" });
+            }
+
+            res.send({ success: true, message: `User ${status === 'active' ? 'activated' : 'deactivated'} successfully` });
+        } catch (error) {
+            console.error(error);
+            res.status(500).send({ message: "Server error" });
+        }
+    });
+
+    // Admin - Delete user (with proper cleanup)
+    app.delete("/admin/users/:id", verifyToken, verifyAdmin, async (req, res) => {
+        try {
+            const { id } = req.params;
+            const user = await usersCollection.findOne({ _id: new ObjectId(id) });
+
+            if (!user) {
+                return res.status(404).send({ message: "User not found" });
+            }
+
+            // If deleting HR, clean up their assets and employee affiliations
+            if (user.role === "hr") {
+                // Delete all assets belonging to this HR
+                await assetsCollection.deleteMany({ hrEmail: user.email });
+
+                // Remove affiliations from employees
+                await usersCollection.updateMany(
+                    { "affiliations.hrEmail": user.email },
+                    { $pull: { affiliations: { hrEmail: user.email } } }
+                );
+
+                // Delete all requests related to this HR
+                await requestCollection.deleteMany({ hrEmail: user.email });
+            }
+
+            // If deleting employee, clean up their asset assignments
+            if (user.role === "employee" && user.assets && user.assets.length > 0) {
+                // Return assets to available status
+                for (const asset of user.assets) {
                     await assetsCollection.updateOne(
-                        { _id: request.assetId },
+                        { _id: asset.assetId },
                         {
                             $set: {
                                 status: "Available",
                                 assignedTo: null,
                                 assignedEmployeeName: null,
-                                assignedDate: null,
-                                updatedAt: new Date()
-                            }
-                        }
-                    );
-
-
-                    // Remove asset from employee
-                    await usersCollection.updateOne(
-                        { email: request.employeeEmail },
-                        { $pull: { assets: { assetId: request.assetId } } }
-                    );
-
-                    // Decrement HR currentEmployees
-                    await usersCollection.updateOne(
-                        { email: hrEmail },
-                        { $inc: { currentEmployees: -1 } }
-                    );
-                }
-
-                // Delete the request
-                await requestCollection.deleteOne({ _id: new ObjectId(id), hrEmail });
-
-                res.send({ success: true, message: "Request deleted successfully" });
-            } catch (err) {
-                console.error(err);
-                res.status(500).send({ message: "Server error" });
-            }
-        });
-
-        // ============= ADMIN APIs =============
-
-        // Admin - Update admin profile
-        app.patch("/admin/:email", verifyToken, verifyAdmin, async (req, res) => {
-            try {
-                const email = req.params.email;
-                const decodedEmail = req.decoded.email;
-
-                if (email !== decodedEmail) {
-                    return res.status(403).send({ message: "Forbidden access" });
-                }
-
-                const updatedData = req.body;
-                // Prevent updating sensitive fields
-                delete updatedData.role;
-                delete updatedData.email;
-                delete updatedData._id;
-
-                // Add updated timestamp
-                updatedData.updatedAt = new Date();
-
-                const result = await admin.updateOne(
-                    { email },
-                    { $set: updatedData }
-                );
-
-                if (result.matchedCount === 0) {
-                    return res.status(404).send({ message: "Admin not found" });
-                }
-
-                res.send({ success: true, message: "Admin profile updated successfully" });
-            } catch (error) {
-                console.error("Admin update error:", error);
-                res.status(500).send({ message: "Server error" });
-            }
-        });
-
-        // Admin Dashboard Analytics - System-wide stats
-        app.get("/admin/analytics/overview", verifyToken, verifyAdmin, async (req, res) => {
-            try {
-                const totalUsers = await usersCollection.countDocuments();
-                const totalHRs = await usersCollection.countDocuments({ role: "hr" });
-                const totalEmployees = await usersCollection.countDocuments({ role: "employee" });
-                const totalAssets = await assetsCollection.countDocuments();
-                const totalRequests = await requestCollection.countDocuments();
-                const pendingRequests = await requestCollection.countDocuments({ status: "pending" });
-                const approvedRequests = await requestCollection.countDocuments({ status: "approved" });
-
-                // Active organizations (HRs with at least 1 employee)
-                const activeOrganizations = await usersCollection.countDocuments({
-                    role: "hr",
-                    currentEmployees: { $gt: 0 }
-                });
-
-                res.send({
-                    totalUsers,
-                    totalHRs,
-                    totalEmployees,
-                    totalAssets,
-                    totalRequests,
-                    pendingRequests,
-                    approvedRequests,
-                    activeOrganizations
-                });
-            } catch (error) {
-                console.error(error);
-                res.status(500).send({ message: "Server error" });
-            }
-        });
-
-        // Admin - Get all users with pagination and filters
-        app.get("/admin/users", verifyToken, verifyAdmin, async (req, res) => {
-            try {
-                const page = parseInt(req.query.page) || 1;
-                const limit = parseInt(req.query.limit) || 10;
-                const role = req.query.role;
-                const search = req.query.search || "";
-
-                const skip = (page - 1) * limit;
-
-                let query = {};
-                if (role && role !== "all") {
-                    query.role = role;
-                }
-                if (search) {
-                    query.$or = [
-                        { name: { $regex: search, $options: "i" } },
-                        { email: { $regex: search, $options: "i" } },
-                        { companyName: { $regex: search, $options: "i" } }
-                    ];
-                }
-
-                const users = await usersCollection
-                    .find(query)
-                    .sort({ createdAt: -1 })
-                    .skip(skip)
-                    .limit(limit)
-                    .toArray();
-
-                const total = await usersCollection.countDocuments(query);
-
-                // Calculate real-time stats (based on all users, not filtered)
-                const [totalUsers, hrCount, employeeCount] = await Promise.all([
-                    usersCollection.countDocuments({}),
-                    usersCollection.countDocuments({ role: 'hr' }),
-                    usersCollection.countDocuments({ role: 'employee' })
-                ]);
-
-                const stats = {
-                    totalUsers,
-                    hrCount,
-                    employeeCount
-                };
-
-                res.send({
-                    users,
-                    total,
-                    page,
-                    totalPages: Math.ceil(total / limit),
-                    stats
-                });
-            } catch (error) {
-                console.error(error);
-                res.status(500).send({ message: "Server error" });
-            }
-        });
-
-        // Admin - Get all organizations (HR users)
-        app.get("/admin/organizations", verifyToken, verifyAdmin, async (req, res) => {
-            try {
-                const organizations = await usersCollection
-                    .find({ role: "hr" })
-                    .project({
-                        name: 1,
-                        email: 1,
-                        companyName: 1,
-                        companyLogo: 1,
-                        subscription: 1,
-                        packageLimit: 1,
-                        currentEmployees: 1,
-                        paid: 1,
-                        createdAt: 1
-                    })
-                    .sort({ createdAt: -1 })
-                    .toArray();
-
-                // Get asset counts for each organization
-                const orgsWithAssets = await Promise.all(
-                    organizations.map(async (org) => {
-                        const assetCount = await assetsCollection.countDocuments({ hrEmail: org.email });
-                        return { ...org, assetCount };
-                    })
-                );
-
-                res.send(orgsWithAssets);
-            } catch (error) {
-                console.error(error);
-                res.status(500).send({ message: "Server error" });
-            }
-        });
-
-        // Admin - Get all assets across all organizations
-        app.get("/admin/assets", verifyToken, verifyAdmin, async (req, res) => {
-            try {
-                const page = parseInt(req.query.page) || 1;
-                const limit = parseInt(req.query.limit) || 10;
-                const search = req.query.search || "";
-                const type = req.query.type;
-                const status = req.query.status;
-
-                const skip = (page - 1) * limit;
-
-                let query = {};
-                if (search) {
-                    query.$or = [
-                        { productName: { $regex: search, $options: "i" } },
-                        { companyName: { $regex: search, $options: "i" } },
-                        { hrEmail: { $regex: search, $options: "i" } }
-                    ];
-                }
-                if (type && type !== "all") {
-                    query.productType = type;
-                }
-                if (status && status !== "all") {
-                    query.status = status;
-                }
-
-                const assets = await assetsCollection
-                    .find(query)
-                    .sort({ createdAt: -1 })
-                    .skip(skip)
-                    .limit(limit)
-                    .toArray();
-
-                const total = await assetsCollection.countDocuments(query);
-
-                res.send({
-                    assets,
-                    total,
-                    page,
-                    totalPages: Math.ceil(total / limit)
-                });
-            } catch (error) {
-                console.error(error);
-                res.status(500).send({ message: "Server error" });
-            }
-        });
-
-        // Admin - System-wide asset analytics
-        app.get("/admin/analytics/assets", verifyToken, verifyAdmin, async (req, res) => {
-            try {
-                // Asset type distribution
-                const assetTypes = await assetsCollection.aggregate([
-                    { $group: { _id: "$productType", count: { $sum: 1 } } }
-                ]).toArray();
-
-                // Asset status distribution (based on quantity)
-                const assetStatus = await assetsCollection.aggregate([
-                    {
-                        $group: {
-                            _id: {
-                                $cond: [
-                                    { $gt: ["$productQuantity", 0] },
-                                    "Available",
-                                    "Out of Stock"
-                                ]
+                                assignedDate: null
                             },
-                            count: { $sum: 1 }
+                            $inc: { productQuantity: 1 }
                         }
-                    }
-                ]).toArray();
-
-                // Top organizations by asset count (with better organization data)
-                const topOrganizations = await assetsCollection.aggregate([
-                    {
-                        $group: {
-                            _id: "$hrEmail",
-                            count: { $sum: 1 },
-                            companyName: { $first: "$companyName" }
-                        }
-                    },
-                    {
-                        $lookup: {
-                            from: "users",
-                            localField: "_id",
-                            foreignField: "email",
-                            as: "hrInfo"
-                        }
-                    },
-                    {
-                        $addFields: {
-                            organizationName: {
-                                $cond: [
-                                    { $and: [{ $ne: ["$companyName", null] }, { $ne: ["$companyName", ""] }] },
-                                    "$companyName",
-                                    {
-                                        $cond: [
-                                            { $gt: [{ $size: "$hrInfo" }, 0] },
-                                            { $arrayElemAt: ["$hrInfo.companyName", 0] },
-                                            { $arrayElemAt: [{ $split: ["$_id", "@"] }, 0] }
-                                        ]
-                                    }
-                                ]
-                            }
-                        }
-                    },
-                    { $sort: { count: -1 } },
-                    { $limit: 10 }
-                ]).toArray();
-
-                // Monthly asset creation trends (last 6 months)
-                const sixMonthsAgo = new Date();
-                sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-
-                const monthlyTrends = await assetsCollection.aggregate([
-                    { $match: { createdAt: { $gte: sixMonthsAgo } } },
-                    {
-                        $group: {
-                            _id: {
-                                year: { $year: "$createdAt" },
-                                month: { $month: "$createdAt" }
-                            },
-                            count: { $sum: 1 }
-                        }
-                    },
-                    { $sort: { "_id.year": 1, "_id.month": 1 } }
-                ]).toArray();
-
-                // Format the response data for charts
-                res.send({
-                    assetTypes: assetTypes.map(item => ({
-                        name: item._id || 'Unknown',
-                        value: item.count
-                    })),
-                    assetStatus: assetStatus.map(item => ({
-                        name: item._id || 'Unknown',
-                        value: item.count
-                    })),
-                    topOrganizations: topOrganizations.map(item => ({
-                        name: item.organizationName || item.companyName || item._id?.split('@')[0] || 'Unknown Organization',
-                        assets: item.count,
-                        hrEmail: item._id
-                    })),
-                    monthlyTrends: monthlyTrends.map(item => ({
-                        month: `${item._id.year}-${item._id.month.toString().padStart(2, '0')}`,
-                        assets: item.count
-                    }))
-                });
-            } catch (error) {
-                console.error('Admin asset analytics error:', error);
-                res.status(500).send({ message: "Server error" });
-            }
-        });
-
-        // Admin - Get all requests across all organizations
-        app.get("/admin/requests", verifyToken, verifyAdmin, async (req, res) => {
-            try {
-                const page = parseInt(req.query.page) || 1;
-                const limit = parseInt(req.query.limit) || 10;
-                const status = req.query.status;
-
-                const skip = (page - 1) * limit;
-
-                let query = {};
-                if (status && status !== "all") {
-                    query.status = status;
-                }
-
-                const requests = await requestCollection
-                    .find(query)
-                    .sort({ requestDate: -1 })
-                    .skip(skip)
-                    .limit(limit)
-                    .toArray();
-
-                const total = await requestCollection.countDocuments(query);
-
-                res.send({
-                    requests,
-                    total,
-                    page,
-                    totalPages: Math.ceil(total / limit)
-                });
-            } catch (error) {
-                console.error(error);
-                res.status(500).send({ message: "Server error" });
-            }
-        });
-
-        // Admin - Update user status (activate/deactivate)
-        app.patch("/admin/users/:id/status", verifyToken, verifyAdmin, async (req, res) => {
-            try {
-                const { id } = req.params;
-                const { status } = req.body; // 'active' or 'inactive'
-
-                const result = await usersCollection.updateOne(
-                    { _id: new ObjectId(id) },
-                    { $set: { status, updatedAt: new Date() } }
-                );
-
-                if (result.matchedCount === 0) {
-                    return res.status(404).send({ message: "User not found" });
-                }
-
-                res.send({ success: true, message: `User ${status === 'active' ? 'activated' : 'deactivated'} successfully` });
-            } catch (error) {
-                console.error(error);
-                res.status(500).send({ message: "Server error" });
-            }
-        });
-
-        // Admin - Delete user (with proper cleanup)
-        app.delete("/admin/users/:id", verifyToken, verifyAdmin, async (req, res) => {
-            try {
-                const { id } = req.params;
-                const user = await usersCollection.findOne({ _id: new ObjectId(id) });
-
-                if (!user) {
-                    return res.status(404).send({ message: "User not found" });
-                }
-
-                // If deleting HR, clean up their assets and employee affiliations
-                if (user.role === "hr") {
-                    // Delete all assets belonging to this HR
-                    await assetsCollection.deleteMany({ hrEmail: user.email });
-
-                    // Remove affiliations from employees
-                    await usersCollection.updateMany(
-                        { "affiliations.hrEmail": user.email },
-                        { $pull: { affiliations: { hrEmail: user.email } } }
                     );
-
-                    // Delete all requests related to this HR
-                    await requestCollection.deleteMany({ hrEmail: user.email });
                 }
 
-                // If deleting employee, clean up their asset assignments
-                if (user.role === "employee" && user.assets && user.assets.length > 0) {
-                    // Return assets to available status
-                    for (const asset of user.assets) {
-                        await assetsCollection.updateOne(
-                            { _id: asset.assetId },
-                            {
-                                $set: {
-                                    status: "Available",
-                                    assignedTo: null,
-                                    assignedEmployeeName: null,
-                                    assignedDate: null
-                                },
-                                $inc: { productQuantity: 1 }
-                            }
+                // Update HR employee count
+                if (user.affiliations && user.affiliations.length > 0) {
+                    for (const affiliation of user.affiliations) {
+                        await usersCollection.updateOne(
+                            { email: affiliation.hrEmail },
+                            { $inc: { currentEmployees: -1 } }
                         );
                     }
-
-                    // Update HR employee count
-                    if (user.affiliations && user.affiliations.length > 0) {
-                        for (const affiliation of user.affiliations) {
-                            await usersCollection.updateOne(
-                                { email: affiliation.hrEmail },
-                                { $inc: { currentEmployees: -1 } }
-                            );
-                        }
-                    }
                 }
-
-                // Delete the user
-                await usersCollection.deleteOne({ _id: new ObjectId(id) });
-
-                res.send({ success: true, message: "User deleted successfully" });
-            } catch (error) {
-                console.error(error);
-                res.status(500).send({ message: "Server error" });
             }
-        });
 
-        // ============= END ADMIN APIs =============
+            // Delete the user
+            await usersCollection.deleteOne({ _id: new ObjectId(id) });
+
+            res.send({ success: true, message: "User deleted successfully" });
+        } catch (error) {
+            console.error(error);
+            res.status(500).send({ message: "Server error" });
+        }
+    });
+
+    // ============= END ADMIN APIs =============
 
 
 
@@ -2182,15 +2100,15 @@ async function run() {
 
 
 
-        // await client.db("admin").command({ ping: 1 });
-        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
+    // await client.db("admin").command({ ping: 1 });
+    // console.log("Pinged your deployment. You successfully connected to MongoDB!");
+} finally {
 
-        app.listen(port, () => {
-            console.log(`Example app listening on port ${port}`)
-        })
-    } catch (error) {
-        console.error("Database connection error:", error);
-    }
 }
 
 run().catch(console.dir);
+
+
+app.listen(port, () => {
+    console.log(`Example app listening on port ${port}`)
+})
