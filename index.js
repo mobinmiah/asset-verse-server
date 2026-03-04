@@ -61,7 +61,8 @@ async function run() {
         const packagesCollection = db.collection("packages")
         const usersCollection = db.collection("users")
         const assetsCollection = db.collection("assets")
-        const requestCollection = db.collection('requests')
+        const requestCollection = db.collection("requests")
+        const reviewsCollection = db.collection("reviews")
 
         // verify hr middleware with database access
         const verifyHR = async (req, res, next) => {
@@ -129,7 +130,7 @@ async function run() {
         })
 
         // payment apis
-        app.post("/checkout-session", verifyToken, verifyHR, async (req, res) => {
+        app.post("/checkout-session", verifyToken, async (req, res) => {
             try {
                 const email = req.decoded.email
                 const packageInfo = req.body;
@@ -167,7 +168,7 @@ async function run() {
         });
 
 
-        app.patch("/payment-success", verifyToken, verifyHR, async (req, res) => {
+        app.patch("/payment-success", verifyToken, async (req, res) => {
             try {
                 const sessionId = req.body.sessionId;
                 const session = await stripe.checkout.sessions.retrieve(sessionId);
@@ -2055,7 +2056,50 @@ async function run() {
             }
         });
 
-        // ============= END ADMIN APIs =============
+        // END ADMIN APIs
+
+        // REVIEW APIs
+        app.get("/reviews", async (req, res) => {
+            try {
+                const cursor = reviewsCollection.find();
+                const result = await cursor.toArray();
+                res.status(200).send(result);
+            } catch (error) {
+                console.error("Error fetching reviews:", error);
+                res.status(500).send({ message: "Failed to fetch reviews" });
+            }
+        });
+
+        app.post("/reviews", verifyToken, async (req, res) => {
+            try {
+                const { name, role, company, image, content, rating } = req.body;
+
+                // Validate required fields
+                if (!name || !role || !company || !content || !rating) {
+                    return res.status(400).send({ message: "Missing required fields" });
+                }
+
+                const newReview = {
+                    name,
+                    role,
+                    company,
+                    image: image,
+                    content,
+                    rating,
+                    createdAt: new Date()
+                };
+
+                const result = await reviewsCollection.insertOne(newReview);
+
+                res.status(201).send({
+                    message: "Review added successfully",
+                    reviewId: result.reviewId,
+                });
+            } catch (error) {
+                console.error("Error adding review:", error);
+                res.status(500).send({ message: "Failed to add review" });
+            }
+        });
 
         // await client.db("admin").command({ ping: 1 });
         // console.log("Pinged your deployment. You successfully connected to MongoDB!");
